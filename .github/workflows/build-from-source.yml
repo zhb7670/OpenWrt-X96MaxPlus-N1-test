@@ -92,6 +92,8 @@ jobs:
     runs-on: ubuntu-24.04
     # GitHub hard limit is 6h (360min). Leave 5min margin for cleanup/upload.
     timeout-minutes: 355
+    permissions:
+      contents: write
     if: ${{ github.event.repository.owner.id == github.event.sender.id }}
 
     steps:
