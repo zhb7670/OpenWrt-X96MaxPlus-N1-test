@@ -110,6 +110,14 @@ CONFIG_PACKAGE_luci-app-mjpg-streamer=y
 CONFIG_PACKAGE_luci-app-rclone=y
 CONFIG_PACKAGE_luci-app-aria2=y
 CONFIG_PACKAGE_luci-app-cifs-mount=y
+CONFIG_PACKAGE_luci-app-samba4=y
+CONFIG_PACKAGE_samba4-server=y
+CONFIG_PACKAGE_samba4-libs=y
+CONFIG_PACKAGE_samba4-client=y
+CONFIG_PACKAGE_samba4-utils=y
+CONFIG_PACKAGE_samba4-admin=y
+CONFIG_PACKAGE_autosamba=y
+CONFIG_PACKAGE_wsdd2=y
 CONFIG_PACKAGE_luci-app-music-remote-center=y
 
 # ==================== X96MaxPlus-N1 : VPN ====================
