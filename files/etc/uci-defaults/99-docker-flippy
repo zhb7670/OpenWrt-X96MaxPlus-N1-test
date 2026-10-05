@@ -1,0 +1,91 @@
+#!/bin/sh
+#======================================================================================
+# OpenWrt-X96MaxPlus-N1  -  Docker 初始化 (first boot, 幂等, 非破坏)
+# 移植自 unifreq(flippy)/openwrt_packit  files/first_run.sh  (Docker 段)
+#
+# 设计原则:
+#   - 只做: 探测大容量数据分区 -> mkdir -> 软链 /opt/docker -> 写 daemon.json -> uci -> 自启
+#   - 绝不执行任何分区(parted/fdisk)或格式化(mkfs)操作
+#   - 找不到大分区时回退根分区 /opt/docker (非破坏)
+#   - 幂等: 重复执行安全
+#======================================================================================
+
+# ---- ① 定位根分区所在磁盘, 推导 p3/p4 ----
+ROOT_PTNAME=$(df / | tail -n1 | awk '{print $1}' | awk -F '/' '{print $3}')
+case "$ROOT_PTNAME" in
+    mmcblk?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//');      PT_PRE="${DISK}p" ;;
+    nvme?n?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//');      PT_PRE="${DISK}p" ;;
+    [hsv]d[a-z][1-9]*) DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');       PT_PRE="${DISK}"  ;;
+    *)                 DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');       PT_PRE="${DISK}"  ;;
+esac
+
+# ---- ② 自动探测已挂载的大容量数据分区 (优先 p4, 再 p3, 最后兜底常见名) ----
+DATA_MNT=""
+for cand in "/mnt/${PT_PRE}4" "/mnt/${PT_PRE}3" "/mnt/mmcblk1p4" "/mnt/mmcblk2p4"; do
+    [ -n "$cand" ] || continue
+    if mountpoint -q "$cand" 2>/dev/null || grep -q " ${cand} " /proc/mounts 2>/dev/null; then
+        DATA_MNT="$cand"
+        break
+    fi
+done
+
+# ---- ③ 建立数据目录 + 软链 (非破坏) ----
+if [ -n "$DATA_MNT" ]; then
+    mkdir -p "${DATA_MNT}/docker"
+    rm -rf /opt/docker
+    ln -sf "${DATA_MNT}/docker/" /opt/docker
+    DATA_ROOT="${DATA_MNT}/docker/"
+    logger -t docker-init "Detected large partition: ${DATA_MNT} -> DATA_ROOT=${DATA_ROOT}"
+else
+    mkdir -p /opt/docker
+    DATA_ROOT="/opt/docker/"
+    logger -t docker-init "No large partition found, fallback DATA_ROOT=${DATA_ROOT}"
+fi
+
+# ---- ④ 预置 daemon.json (flippy 同款) ----
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<EOF
+{
+  "bip": "172.31.0.1/24",
+  "data-root": "${DATA_ROOT}",
+  "log-level": "warn",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5"
+  },
+  "registry-mirrors": [
+    "https://mirror.baidubce.com/",
+    "https://hub-mirror.c.163.com"
+  ]
+}
+EOF
+
+# ---- ⑤ uci 配置 (lede dockerd 以 uci 为准, daemon.json 为辅) ----
+uci -q batch <<EOF
+delete dockerd.globals
+set dockerd.globals=globals
+set dockerd.globals.auto_start='1'
+set dockerd.globals.data_root='${DATA_ROOT}'
+set dockerd.globals.log_level='warn'
+set dockerd.globals.bip='172.31.0.1/24'
+set dockerd.globals.iptables='true'
+add_list dockerd.globals.registry_mirrors='https://mirror.baidubce.com/'
+add_list dockerd.globals.registry_mirrors='https://hub-mirror.c.163.com'
+delete dockerd.dockerman
+set dockerd.dockerman=dockerman
+set dockerd.dockerman.socket_path='/var/run/docker.sock'
+set dockerd.dockerman.status_path='/tmp/.docker_action_status'
+set dockerd.dockerman.debug='false'
+set dockerd.dockerman.remote_endpoint='0'
+add_list dockerd.dockerman.ac_allowed_interface='br-lan'
+commit dockerd
+EOF
+
+# ---- ⑥ 开机自启并启动 ----
+if [ -x /etc/init.d/dockerd ]; then
+    /etc/init.d/dockerd enable
+    /etc/init.d/dockerd restart
+fi
+
+exit 0

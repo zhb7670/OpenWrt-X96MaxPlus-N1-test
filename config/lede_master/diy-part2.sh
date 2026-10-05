@@ -141,3 +141,20 @@ CONFIG_PACKAGE_luci-app-nlbwmon=y
 EOF
 
 echo "[diy-part2] Plugin list appended. Total lines in .config: $(wc -l < .config)"
+
+#=====================================================================================
+# 注入自定义 files/ 到 base-files (OpenWrt 标准机制, 最可靠)
+#   本脚本执行时 cwd = openwrt/, 仓库根 = $(dirname $0)/..
+#   files/ 下的内容会被 base-files 包并入 rootfs 顶层 (etc/... 等)
+#=====================================================================================
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -d "${REPO_ROOT}/files" ]; then
+    echo "[diy-part2] Injecting custom files/ into package/base-files/files/ ..."
+    cp -rf "${REPO_ROOT}/files/." package/base-files/files/
+    # uci-defaults 必须可执行
+    find package/base-files/files/etc/uci-defaults -type f -exec chmod +x {} \; 2>/dev/null
+    echo "[diy-part2] Injected files:"
+    find package/base-files/files/etc/docker package/base-files/files/etc/uci-defaults package/base-files/files/etc/sysctl.d -type f 2>/dev/null
+else
+    echo "[diy-part2] WARNING: ${REPO_ROOT}/files not found, skip injection"
+fi

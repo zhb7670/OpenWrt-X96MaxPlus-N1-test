@@ -196,7 +196,8 @@ jobs:
 
       - name: Load custom configuration
         run: |
-          [[ -d "files" ]] && mv -f files openwrt/files
+          # NOTE: 自定义 files/ 由 diy-part2.sh 注入到 package/base-files/files/
+          # (OpenWrt 标准机制). 此处不再 mv 到 openwrt/files, 避免死目录无效果.
           [[ -e "${CONFIG_FILE}" ]] && cp -f ${CONFIG_FILE} openwrt/.config
           chmod +x ${DIY_P2_SH}
           cd openwrt/
