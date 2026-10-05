@@ -6,7 +6,7 @@
 > 但**不复制旧代码** —— 全面基于当前上游重新构建：
 > 现代 OpenWrt + 当前稳定 Linux Kernel + 当前 LuCI + 当前插件源码。
 
-[![Build](https://github.com/zhb7670/OpenWrt-X96MaxPlus-N1/actions/workflows/build.yml/badge.svg)](https://github.com/zhb7670/OpenWrt-X96MaxPlus-N1/actions/workflows/build.yml)
+[![Build](https://github.com/zhb7670/OpenWrt-X96MaxPlus-N1-test/actions/workflows/build-from-source.yml/badge.svg)](https://github.com/zhb7670/OpenWrt-X96MaxPlus-N1-test/actions/workflows/build-from-source.yml)
 
 ---
 
@@ -36,8 +36,13 @@
 | 509 | X96-Air-1Gb | `meson-sm1-x96-air-gbit.dtb` | 1Gb | WiFi | — |
 | 510 | X96-Air-100Mb | `meson-sm1-x96-air.dtb` | 100Mb | WiFi | — |
 
-> ⚠️ **重要**：`X96-Max+_100Mb` 名字里的 "100M" **不是网卡速率** —— 它的网卡实际是 **千兆(1Gb)**。
-> 真正 100Mb 网卡的是 A100 / Q1 / X96-Air-100Mb。**不要按名字推断硬件。**
+> ⚠️ **重要（实测修正）**：数据库里 `X96-Max+_100Mb` (ID 501) 虽标注 `1Gb-Nic`，
+> 但其 DTB `meson-sm1-x96-max-plus-100m.dtb` **把 GMAC 限速在 100M**（本机只 advertise 10/100baseT）。
+> 本机实测：PHY 为 **RTL8211F 千兆芯片**，对端已 advertise `1000baseT`，但仍被协商到 100Mb/s
+> → **根因是 DTB 限速，不是硬件**。
+>
+> ✅ **修复**：改用 ID 502 对应的 BOARD 名 **`s905x3-x96max`**（DTB `meson-sm1-x96-max-plus.dtb`），
+> 网口恢复千兆。已固化到两个工作流的默认值。
 
 ### N1 / S905D 全部变体
 
@@ -54,49 +59,67 @@
 | SoC | Amlogic S905X3 |
 | RAM / eMMC | 4GB / 64GB |
 | WiFi/蓝牙 模块 | Fn-Link **8274B-SR** = 芯片 **RTL8822CS** |
+| 有线网口 PHY | **RTL8211F**（千兆，phy_id `0x001cc916`） |
 | 标签 | QCPASS 4+64+W522A |
-| **对应数据库条目** | **ID 501 `X96-Max+_100Mb`**（rtl8822cs-wifi，完全匹配） |
-| **对应 DTB** | `meson-sm1-x96-max-plus-100m.dtb` |
+| **采用 BOARD 名** | **`s905x3-x96max`**（ID 502 千兆，DTB `meson-sm1-x96-max-plus.dtb`） |
 
-> 主板丝印 `Q5X3 V4.1` 不是型号依据；权威依据是 WiFi 芯片：`8274B-SR → RTL8822CS`，
-> 与数据库 ID 501 标注的 `rtl8822cs-wifi` 一致。
+> 原用 ID 501 (`s905x3`) 的 100m DTB 会导致有线只有 100M，已修正为千兆 BOARD。
 
-## 三、当前构建（Phase 1）
+## 三、构建路线（两条，用途不同）
 
-**Phase 1 目标：最小可启动固件。**
+本项目提供**两套独立工作流**，产物差异很大，按需选用：
+
+| 工作流 | 源 | 插件量 | 产物大小 | 用途 |
+|---|---|---|---|---|
+| **`build-from-source.yml`** ⭐ | `coolsnowwolf/lede` master | **全量（600+ 包）** | ~680 MB | **主力固件**（全套插件） |
+| `build.yml` | `openwrt` 官方源 | 精简（~60 包） | ~340 MB | 轻量测试 / 快速验证 |
+
+> ⭐ **日常刷机用 `build-from-source.yml`**（lede 全量）。`build.yml`（ImageBuilder）仅用于快速验证编译链路。
+
+### 主力构建（lede 全量）
 
 | 项 | 值 |
 |---|---|
-| OpenWrt | `openwrt:25.12.5`（可切换 24.10.8 / immortalwrt） |
-| Linux Kernel | **auto_kernel=true** → 自动跟随最新稳定（当前 6.18.y） |
-| 打包体系 | [ophub/amlogic-s9xxx-openwrt](https://github.com/ophub/amlogic-s9xxx-openwrt) action |
-| 内核来源 | [ophub/kernel](https://github.com/ophub/kernel) `stable` tag |
-| Board | `s905x3` (X96Max+) + `s905d` (N1) |
+| 源码 | `coolsnowwolf/lede` `master` |
+| 配置目录 | `config/lede_master/` |
+| 打包 | [zhb7670/amlogic-s9xxx-openwrt](https://github.com/zhb7670/amlogic-s9xxx-openwrt) fork |
+| 内核 | `ophub/kernel` `stable` tag，auto_kernel 跟随最新（当前 6.18.y） |
+| **Board** | **`s905x3-x96max`** (X96Max+ 千兆) + `s905d` (N1) |
+| **rootfs 分区** | **3072 MiB (3G)** |
 | 默认 IP | `192.168.1.1` |
 | 默认账号 | `root` / `password` |
+| 构建耗时 | ~4 小时（全量编译） |
 
-### Phase 1 内置功能
+### 本固件特性（在 lede 全量基础上的定制）
 
-- LuCI（Argon 主题、中文）
-- SSH（dropbear + openssh-sftp）
-- ttyd 网页终端、文件管理、系统备份/升级
-- 网络诊断、流量统计（nlbwmon / vnstat2 / statistics）
-- 磁盘管理（diskman / hd-idle）
-- USB 存储、ext4/vfat/exfat/ntfs3/btrfs/xfs/f2fs
-- WiFi 驱动：**RTL8822CS**（X96Max+）、**BCM43455**（N1）
-- 蓝牙
-- Amlogic 安装服务（luci-app-amlogic，用于写入 eMMC）
+- **千兆有线网口**：`s905x3-x96max` BOARD（DTB `meson-sm1-x96-max-plus.dtb`），非 100m 限速版
+- **rootfs 3G**：刷机后 `/` 分区 3072 MiB，可用约 2.9G
+- **Docker**：
+  - 界面：`luci-app-dockerman` + `luci-i18n-dockerman-zh-cn`（中文）
+  - 已移除冲突的旧包 `luci-app-docker`
+  - 完整运行时：`docker` + `dockerd` + `containerd` + `runc` + `docker-compose`
+  - 预置 `/etc/docker/daemon.json`：DNS `223.5.5.5 / 119.29.29.29`，`data-root = /opt/docker`，日志轮转
+  - 首启幂等创建 `/opt/docker`，**绝不执行分区/格式化**（无外接盘也能正常工作）
 
 ## 四、刷机方法
 
 ### 1. 下载
-从 [Releases](../../releases) 下载对应设备的 `.img` 文件。
+从 [Releases](../../releases) 下载对应设备的 `.img.gz` 文件。
+
+| 设备 | 推荐文件 |
+|---|---|
+| **X96 Max+** | `openwrt_lede_amlogic_s905x3-x96max_k6.18.55_*.img.gz` |
+| **斐讯 N1** | `openwrt_lede_amlogic_s905d_k6.18.55_*.img.gz` |
+
+> 文件名里的 `s905x3-x96max` = **千兆网口版**（对应 ID 502 DTB）。
+> `k6.18.55` 为新版内核，`k6.12.112` 更保守，二者择一即可。
 
 ### 2. 写入 SD 卡 / U 盘
 用 **balenaEtcher** / **Rufus** / `dd` 把 `.img` 写入 SD 或 U 盘。
 ```bash
-# Linux 示例（确认 /dev/sdX 是你自己的卡！）
-sudo dd if=*.img of=/dev/sdX bs=4M status=progress conv=fsync
+# Linux 示例（先解压 .gz，再确认 /dev/sdX 是你自己的卡！）
+gunzip -c openwrt_lede_amlogic_s905x3-x96max_k6.18.55_*.img.gz | \
+  sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
 ### 3. 启动
@@ -119,42 +142,72 @@ sudo dd if=*.img of=/dev/sdX bs=4M status=progress conv=fsync
 
 > 强烈建议刷机前备份原厂固件与 MAC 地址。
 
-## 六、路线图
+## 六、刷机后验证
+
+```sh
+# ① 千兆有线网口（期望 1000Mb/s）
+ethtool eth0 | grep Speed
+cat /proc/device-tree/model          # 不应再出现 "100Mb/s"
+
+# ② rootfs 3G（期望 ~3G 分区）
+df -h /
+
+# ③ Docker
+docker info | grep "Docker Root Dir" # 期望 /opt/docker
+docker version                        # 客户端+服务端均正常
+ls /usr/lib/lua/luci/i18n/ | grep dockerman   # 中文语言包存在
+```
+
+## 七、路线图
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| **Phase 1** | OpenWrt + Kernel + Amlogic + X96Max+ + N1 最小可启动 | 🔄 进行中 |
-| Phase 2 | Samba / NFS / SQM / MWAN3 / WireGuard / OpenVPN / DDNS / UPnP / WOL | ⏳ |
-| Phase 3 | SmartDNS / AdGuard Home / MosDNS / OpenClash / PassWall / PassWall2 / Xray / V2Ray | ⏳ |
-| Phase 4 | Docker / qBittorrent / Transmission / Aria2 / Rclone / Netdata | ⏳ |
+| **Phase 1** | OpenWrt + Kernel + Amlogic + X96Max+ + N1 最小可启动 | ✅ 完成 |
+| **Phase 2** | 千兆网口修正 + rootfs 3G + Docker 重构 | ✅ 完成 |
+| Phase 2 | Samba / NFS / SQM / MWAN3 / WireGuard / OpenVPN / DDNS / UPnP / WOL | 🔄 |
+| Phase 3 | SmartDNS / AdGuard Home / MosDNS / OpenClash / PassWall / PassWall2 / Xray / V2Ray | 🔄 |
+| Phase 4 | qBittorrent / Transmission / Aria2 / Rclone / Netdata | ⏳ |
 
 > 原则：**先保证编译成功 → 镜像生成 → DTB 正确 → 刷机启动，再逐步加入插件。**
 > 若某插件无法编译，记录原因，不强行塞入导致整个矩阵失败。
 
-## 七、自动构建
+## 八、自动构建
 
-- **手动触发**：Actions → `Build OpenWrt (X96Max+ / N1)` → Run workflow
-- **每周自动**：每周一 03:00 UTC 检查上游更新
-- 产物：`*.img` + `sha256sum.txt`，上传 Artifact 并发布 Release
+- **主力（全量）**：Actions → `Build OpenWrt from Source (X96Max+ / N1)` → Run workflow
+- **轻量（精简）**：Actions → `Build OpenWrt (X96Max+ / N1)` → Run workflow
+- 产物：`*.img.gz` + `sha256sum.txt`，上传 Artifact 并发布 Release
+- 全量编译耗时约 4 小时
 
-## 八、开发说明
+## 九、开发说明
 
 ```
 .
-├── .github/workflows/build.yml          # 唯一构建入口
+├── .github/workflows/
+│   ├── build-from-source.yml            # ⭐ 主力：lede 全量编译
+│   └── build.yml                        # 轻量：官方源 ImageBuilder
 ├── config/
-│   └── imagebuilder/
-│       ├── imagebuilder.sh              # 构建脚本（核心包清单在此）
-│       ├── config                       # Phase 1 附加包清单
-│       ├── files/                       # 自定义 overlay 文件
-│       └── packages/                    # 可选：本地 .ipk/.apk
+│   ├── lede_master/                     # ⭐ 主力配置（build-from-source 用）
+│   │   ├── config                       # 完整 .config（600+ 包）
+│   │   ├── diy-part1.sh                 # feeds update 前
+│   │   ├── diy-part2.sh                 # feeds update 后
+│   │   └── feeds.conf.default
+│   └── imagebuilder/                    # 轻量配置（build.yml 用）
+│       ├── imagebuilder.sh
+│       ├── config
+│       └── files/
+├── files/                               # ⭐ 全量路线的自定义 overlay 注入
+│   ├── etc/docker/daemon.json
+│   └── etc/uci-defaults/99-docker-dataroot
 └── README.md
 ```
 
-**修改设备范围**：编辑 `build.yml` 的 `openwrt_board`（逗号分隔 board 名）。
-**新增插件**：加入 `config/imagebuilder/config`，格式 `CONFIG_PACKAGE_xxx=y`。
+**修改设备范围**：编辑工作流的 `openwrt_board`（默认 `s905x3-x96max_s905d`）。
+**调整 rootfs 大小**：编辑工作流的 `openwrt_size`（默认 `3072` MiB）。
+**新增插件（全量）**：加入 `config/lede_master/config`，格式 `CONFIG_PACKAGE_xxx=y`。
+**新增插件（轻量）**：加入 `config/imagebuilder/config`，格式 `CONFIG_PACKAGE_xxx=y`。
+**新增 overlay 文件（全量）**：放入仓库根 `files/`（workflow 自动 `mv files openwrt/files`）。
 
-## 九、致谢
+## 十、致谢
 
 - [ophub/amlogic-s9xxx-openwrt](https://github.com/ophub/amlogic-s9xxx-openwrt) — Amlogic 打包体系
 - [ophub/kernel](https://github.com/ophub/kernel) — 内核
@@ -162,6 +215,6 @@ sudo dd if=*.img of=/dev/sdX bs=4M status=progress conv=fsync
 - [haiibo/OpenWrt](https://github.com/haiibo/OpenWrt) — 项目理念来源
 - OpenWrt / ImmortalWrt 上游
 
-## 十、许可
+## 十一、许可
 
 GPL-2.0
