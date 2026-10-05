@@ -50,6 +50,10 @@ on:
         description: "Default LAN IP"
         required: false
         default: "192.168.1.1"
+      openwrt_size:
+        description: "Rootfs partition size in MiB (min 1024). 3072 = 3G"
+        required: false
+        default: "3072"
       builder_name:
         description: "Builder signature"
         required: false
@@ -123,6 +127,7 @@ jobs:
           kernel_repo: "ophub/kernel"
           kernel_usage: "stable"
           openwrt_ip: ${{ inputs.openwrt_ip || '192.168.1.1' }}
+          openwrt_size: ${{ inputs.openwrt_size || '3072' }}
           builder_name: ${{ inputs.builder_name || 'zhb7670' }}
 
       - name: Generate SHA256
