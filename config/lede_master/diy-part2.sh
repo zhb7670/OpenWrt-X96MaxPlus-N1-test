@@ -154,9 +154,11 @@ if [ -d "${REPO_ROOT}/files" ]; then
     echo "[diy-part2] Injecting custom files/ into package/base-files/files/ ..."
     cp -rf "${REPO_ROOT}/files/." package/base-files/files/
     # uci-defaults 必须可执行
-    find package/base-files/files/etc/uci-defaults -type f -exec chmod +x {} \; 2>/dev/null
+    find package/base-files/files/etc/uci-defaults -type f -exec chmod +x {} \; 2>/dev/null || true
     echo "[diy-part2] Injected files:"
-    find package/base-files/files/etc/docker package/base-files/files/etc/uci-defaults package/base-files/files/etc/sysctl.d -type f 2>/dev/null
+    # 注意: etc/docker/daemon.json 由 99-docker-flippy 首次启动时生成, 仓库里不存在,
+    # 故这里用模式匹配而非固定目录, 且容忍 find 非 0 退出 (bash -e 下会致命)
+    find package/base-files/files/etc -type f \( -name '99-docker*' -o -name '*docker*.json' -o -name '99-docker.conf' \) 2>/dev/null || true
 else
     echo "[diy-part2] WARNING: ${REPO_ROOT}/files not found, skip injection"
 fi
