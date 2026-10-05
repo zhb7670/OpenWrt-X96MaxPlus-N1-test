@@ -144,11 +144,13 @@ echo "[diy-part2] Plugin list appended. Total lines in .config: $(wc -l < .confi
 
 #=====================================================================================
 # 注入自定义 files/ 到 base-files (OpenWrt 标准机制, 最可靠)
-#   本脚本执行时 cwd = openwrt/, 仓库根 = $(dirname $0)/..
+#   本脚本位于 <repo>/config/<branch>/diy-part2.sh, 执行时 cwd = <repo>/openwrt/
+#   仓库根 = $(dirname $0)/../..  (向上两级: config/<branch>/ -> config/ -> repo root)
 #   files/ 下的内容会被 base-files 包并入 rootfs 顶层 (etc/... 等)
 #=====================================================================================
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 if [ -d "${REPO_ROOT}/files" ]; then
+    echo "[diy-part2] Repo root: ${REPO_ROOT}"
     echo "[diy-part2] Injecting custom files/ into package/base-files/files/ ..."
     cp -rf "${REPO_ROOT}/files/." package/base-files/files/
     # uci-defaults 必须可执行
