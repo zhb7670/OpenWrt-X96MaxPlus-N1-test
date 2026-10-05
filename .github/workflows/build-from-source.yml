@@ -23,9 +23,9 @@ on:
         options:
           - lede_master
       openwrt_board:
-        description: "Device board(s), underscore separated (s905x3 = X96Max+, s905d = N1)"
+        description: "Device board(s), underscore separated (s905x3-x96max = X96Max+ 千兆, s905d = N1)"
         required: false
-        default: "s905x3_s905d"
+        default: "s905x3-x96max_s905d"
       openwrt_kernel:
         description: "Kernel version (auto_kernel=true overrides to latest stable)"
         required: false
@@ -61,6 +61,10 @@ on:
         description: "Default LAN IP"
         required: false
         default: "192.168.1.1"
+      openwrt_size:
+        description: "Rootfs partition size in MiB (min 1024). 3072 = 3G"
+        required: false
+        default: "3072"
       use_ccache:
         description: "Use ccache (REQUIRED for fast incremental rebuilds)"
         required: false
@@ -326,6 +330,7 @@ jobs:
           auto_kernel: ${{ inputs.auto_kernel }}
           kernel_repo: ${{ inputs.kernel_repo }}
           kernel_usage: ${{ inputs.kernel_usage }}
+          openwrt_size: ${{ inputs.openwrt_size || '3072' }}
           builder_name: ${{ inputs.builder_name }}
 
       - name: Upload packaged OpenWrt to Release
