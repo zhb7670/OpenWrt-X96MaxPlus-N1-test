@@ -28,9 +28,9 @@ on:
           - immortalwrt:25.12.1
           - immortalwrt:24.10.6
       openwrt_board:
-        description: "Device board(s), underscore separated (s905x3 = X96Max+, s905d = N1)"
+        description: "Device board(s), underscore separated (s905x3-x96max = X96Max+ 千兆, s905d = N1)"
         required: false
-        default: "s905x3_s905d"
+        default: "s905x3-x96max_s905d"
       openwrt_kernel:
         description: "Kernel version (auto_kernel=true overrides to latest)"
         required: false
@@ -117,7 +117,7 @@ jobs:
         uses: ophub/amlogic-s9xxx-openwrt@main
         with:
           openwrt_path: output/*rootfs.tar.gz
-          openwrt_board: ${{ inputs.openwrt_board || 's905x3_s905d' }}
+          openwrt_board: ${{ inputs.openwrt_board || 's905x3-x96max_s905d' }}
           openwrt_kernel: ${{ inputs.openwrt_kernel || '6.12.y_6.18.y' }}
           auto_kernel: ${{ inputs.auto_kernel || 'true' }}
           kernel_repo: "ophub/kernel"
