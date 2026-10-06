@@ -10,6 +10,18 @@
 
 ---
 
+## ✅ 当前状态（2026-10-05）
+
+| 项 | 值 |
+|---|---|
+| 最新构建 | run [`37343091946`](https://github.com/zhb7670/OpenWrt-X96MaxPlus-N1-test/actions/runs/37343091946) |
+| 结果 | ✅ **success** |
+| 耗时 | **5h 27m 49s**（冷编译，含 ccache 恢复失败） |
+| Release | [`OpenWrt_X96MaxPlus_N1_lede_master_2026.10.05`](../../releases) |
+| 下次构建预期 | **20-40 分钟**（ccache 基线已建立） |
+
+---
+
 ## 一、支持的设备
 
 本项目**只做这两个硬件系列**，其他 Amlogic 盒子一律不构建。
@@ -84,24 +96,106 @@
 | 配置目录 | `config/lede_master/` |
 | 打包 | [zhb7670/amlogic-s9xxx-openwrt](https://github.com/zhb7670/amlogic-s9xxx-openwrt) fork |
 | 内核 | `ophub/kernel` `stable` tag，auto_kernel 跟随最新（当前 6.18.y） |
-| **Board** | **`s905x3-x96max`** (X96Max+ 千兆) + `s905d` (N1) |
+| Board | **`s905x3-x96max`** (X96Max+ 千兆) + `s905d` (N1) |
 | **rootfs 分区** | **3072 MiB (3G)** |
 | 默认 IP | `192.168.1.1` |
 | 默认账号 | `root` / `password` |
-| 构建耗时 | ~4 小时（全量编译） |
+| 构建耗时 | **5h28m**（冷编译，2026-10-05 实测） |
 
 ### 本固件特性（在 lede 全量基础上的定制）
 
 - **千兆有线网口**：`s905x3-x96max` BOARD（DTB `meson-sm1-x96-max-plus.dtb`），非 100m 限速版
 - **rootfs 3G**：刷机后 `/` 分区 3072 MiB，可用约 2.9G
-- **Docker**：
-  - 界面：`luci-app-dockerman` + `luci-i18n-dockerman-zh-cn`（中文）
-  - 已移除冲突的旧包 `luci-app-docker`
-  - 完整运行时：`docker` + `dockerd` + `containerd` + `runc` + `docker-compose`
-  - 预置 `/etc/docker/daemon.json`：DNS `223.5.5.5 / 119.29.29.29`，`data-root = /opt/docker`，日志轮转
-  - 首启幂等创建 `/opt/docker`，**绝不执行分区/格式化**（无外接盘也能正常工作）
+- **Docker**：见下节「四、Docker 说明」
 
-## 四、刷机方法
+## 四、Docker 说明（大白话版）
+
+### 4.1 装了哪些包
+
+| 包 | 干什么的 |
+|---|---|
+| `docker` | 命令行工具（你敲 `docker ps` 用的） |
+| `dockerd` | 后台守护进程（真正干活的引擎） |
+| `containerd` | 更底层的容器运行时（dockerd 依赖它） |
+| `runc` | 真正创建/启动容器的执行器 |
+| `docker-compose` | 用 yaml 文件一次起一堆容器 |
+| `luci-app-dockerman` | LuCI 里的 Docker 图形界面 |
+| `luci-i18n-dockerman-zh-cn` | 上面的中文语言包 |
+
+> ⚠️ 老包 `luci-app-docker` **已移除** —— 它和 `dockerman` 冲突，两个一起装会导致界面错乱。
+
+**一句话**：这是**完整的 Docker 全家桶**，不是只有一个壳。
+
+### 4.2 Docker 数据放哪（重点）
+
+**问题**：rootfs 只有 3G，Docker 镜像下载几个就爆了。
+
+**解决**：首启脚本 `99-docker-flippy` 会自动找机器上最大的那个分区，把 Docker 数据搬过去。
+
+```
+探测顺序：/mnt/<磁盘>4 → /mnt/<磁盘>3 → /mnt/mmcblk1p4 → /mnt/mmcblk2p4
+（p4 是你刷机后剩下的最大空闲分区）
+```
+
+- **找到了** → `ln -sf <大分区>/docker /opt/docker`（软链接）
+- **没找到** → 老实回退到根分区 `/opt/docker`（能用，但空间小）
+
+> 🛡️ **安全设计**：脚本**只做 mkdir 和软链接**，**绝不执行分区(parted/fdisk)或格式化(mkfs)**。
+> 所以**没有外接盘也绝对不会把你的机器搞崩**。
+
+### 4.3 几个关键设置（已预置，开箱即用）
+
+| 设置 | 值 | 为什么 |
+|---|---|---|
+| **Docker 自启** | `auto_start=1` | ⚠️ **不设这个 dockerd 开机不自启**，LuCI 里会报 `Failed to connect to /var/run/docker.sock` |
+| 数据目录 | `data-root` = 自动探测的大分区 | 防止根分区被镜像撑爆 |
+| 网段 | `bip = 172.31.0.1/24` | 避开家里常用的 `192.168.1.x`，防止路由冲突 |
+| 国内镜像加速 | 百度云 + 网易 | 拉镜像不用翻墙、速度快 |
+| 日志轮转 | 单文件 10M，最多留 5 个 | 防止日志把磁盘写满 |
+
+### 4.4 一个坑：配置改哪才生效
+
+lede 的 `dockerd` 是**由 uci 驱动的**（`/etc/config/dockerd`）。
+
+```
+❌ 只改 /etc/docker/daemon.json  → 可能不生效
+✅ 改 /etc/config/dockerd（或用 LuCI 界面改）→ 生效
+```
+
+脚本**两个都写了**（daemon.json 做兜底，uci 为准）。
+
+### 4.5 刷机后怎么验证
+
+```sh
+# ① 看 Docker 装好没
+docker version           # 客户端 + 服务端版本都能出来才算正常
+docker info | grep "Docker Root Dir"   # 期望指向大分区，不是 /opt/docker(软链后也没事)
+
+# ② 看数据目录挂在哪
+ls -l /opt/docker        # 期望是个软链接 -> /mnt/xxx/docker/
+
+# ③ 看中文界面在不在
+ls /usr/lib/lua/luci/i18n/ | grep dockerman
+
+# ④ 看自启开没开
+uci get dockerd.globals.auto_start   # 期望 1
+
+# ⑤ 真起一个容器试试
+docker run --rm hello-world
+```
+
+### 4.6 已知注意事项
+
+- **改完 data-root 要重启 dockerd**：
+  ```sh
+  /etc/init.d/dockerd stop
+  rm -rf /tmp/dockerd          # 清掉旧的运行时状态
+  /etc/init.d/dockerd start
+  ```
+- Docker 的网段是 `172.31.0.1/24`，**别让路由器/其他设备也用这个网段**。
+- 首次拉镜像建议先用 `hello-world` 小镜像验证网络通了。
+
+## 五、刷机方法
 
 ### 1. 下载
 从 [Releases](../../releases) 下载对应设备的 `.img.gz` 文件。
@@ -131,7 +225,7 @@ gunzip -c openwrt_lede_amlogic_s905x3-x96max_k6.18.55_*.img.gz | \
 2. `系统` → `Amlogic 服务` → `安装 OpenWrt` → 选择目标 eMMC
 3. 安装完成后拔掉 SD 卡重启
 
-## 五、恢复 / 救砖
+## 六、恢复 / 救砖
 
 | 情况 | 恢复方法 |
 |---|---|
@@ -142,7 +236,7 @@ gunzip -c openwrt_lede_amlogic_s905x3-x96max_k6.18.55_*.img.gz | \
 
 > 强烈建议刷机前备份原厂固件与 MAC 地址。
 
-## 六、刷机后验证
+## 七、刷机后验证
 
 ```sh
 # ① 千兆有线网口（期望 1000Mb/s）
@@ -158,27 +252,97 @@ docker version                        # 客户端+服务端均正常
 ls /usr/lib/lua/luci/i18n/ | grep dockerman   # 中文语言包存在
 ```
 
-## 七、路线图
+## 八、路线图
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | **Phase 1** | OpenWrt + Kernel + Amlogic + X96Max+ + N1 最小可启动 | ✅ 完成 |
-| **Phase 2** | 千兆网口修正 + rootfs 3G + Docker 重构 | ✅ 完成 |
-| Phase 2 | Samba / NFS / SQM / MWAN3 / WireGuard / OpenVPN / DDNS / UPnP / WOL | 🔄 |
-| Phase 3 | SmartDNS / AdGuard Home / MosDNS / OpenClash / PassWall / PassWall2 / Xray / V2Ray | 🔄 |
-| Phase 4 | qBittorrent / Transmission / Aria2 / Rclone / Netdata | ⏳ |
+| **Phase 2** | 千兆网口修正 + rootfs 3G + Docker 重构（flippy 方案） | ✅ 完成 |
+| Phase 3 | Samba / NFS / SQM / MWAN3 / WireGuard / OpenVPN / DDNS / UPnP / WOL | 🔄 |
+| Phase 4 | SmartDNS / AdGuard Home / MosDNS / OpenClash / PassWall / PassWall2 / Xray / V2Ray | 🔄 |
+| Phase 5 | qBittorrent / Transmission / Aria2 / Rclone / Netdata | ⏳ |
 
 > 原则：**先保证编译成功 → 镜像生成 → DTB 正确 → 刷机启动，再逐步加入插件。**
 > 若某插件无法编译，记录原因，不强行塞入导致整个矩阵失败。
 
-## 八、自动构建
+## 九、自动构建
 
 - **主力（全量）**：Actions → `Build OpenWrt from Source (X96Max+ / N1)` → Run workflow
 - **轻量（精简）**：Actions → `Build OpenWrt (X96Max+ / N1)` → Run workflow
 - 产物：`*.img.gz` + `sha256sum.txt`，上传 Artifact 并发布 Release
-- 全量编译耗时约 4 小时
 
-## 九、开发说明
+### 9.1 为什么要 5 个多小时？（实测数据，2026-10-05）
+
+GitHub runner 只有 **4 核 / 16GB**，而 lede 全量要编译 **1636 个编译单元**（600+ 软件包）。
+实测本次 run（`37343091946`）耗时 **5h27m49s**，各阶段如下：
+
+| 阶段 | 耗时 |
+|---|---|
+| 环境初始化 + 虚拟磁盘 + 拉源码 + feeds | ~8 min |
+| **编译（Compile）** | **~5h02m** |
+| 保存 ccache + 打包 + 上传 Release | ~7 min |
+
+**编译阶段谁最耗时**（TOP 5）：
+
+| 编译单元 | 耗时 | 占比 |
+|---|---|---|
+| **Linux 内核 6.18.55** | **255.9 min** | 🔥 **约 42%** |
+| **node-v20.18.2（host 包）** | **114.4 min** | 🔥 **约 19%** |
+| hostpkg/Python-3.11.13 | 19.8 min | |
+| php-8.3.14 | 19.2 min | |
+| Python-3.11.13 (target) | 14.8 min | |
+
+> 👉 **光「内核 + node」两项就占了 61% 的时间**。这是全量编译绕不开的代价。
+
+### 9.2 ccache 为什么没帮上忙？（关键真相）
+
+本次 ccache 统计：
+
+```
+Cacheable calls: 61263 / 85770 (71.43%)
+  Hits:          6599 / 61263 (10.77%)   ← 命中率只有 10.77%
+  Misses:       54664 / 61263 (89.23%)
+Cache size:     1.1 GiB / 5.0 GiB
+```
+
+**命中率低的三个原因**：
+
+1. **恢复缓存的 run 失败了** —— 上次 restore 拿到的是 `openwrt-lede--37340570180`，
+   是个**几乎空的缓存（360 B）**。等于这次是**冷编译**。
+2. **ccache 只管 C/C++ 编译** —— 内核配置阶段、LTO 链接、Go/Rust 程序、打包压缩**全都不吃缓存**。
+3. **大量 Go 程序**：OpenClash 的 mihomo、PassWall 的 xray、containerd 等，**都用 Go 自己的缓存机制**，ccache 无能为力。
+
+> ⚠️ **血泪教训**：网上说"第一次 4h，有 ccache 后 30min"——
+> **只有「编译成功过一次」之后才成立**。中途失败的话，ccache 只存到失败点之前。
+
+### 9.3 正确的耗时预期
+
+| 场景 | 预期耗时 |
+|---|---|
+| 首次冷编译（从零） | **4-5.5 小时** |
+| ✅ 编译成功过 + 本次无代码变更 | **20-40 分钟** |
+| 成功基线 + 只改 1 个插件 | 15-30 分钟 |
+| 上次失败在中途 + 本次重跑 | 3.5-4.5 小时 |
+
+> 🎯 **现在的状态：已经拿到「首次编译成功」的基线了**（run `37343091946`）。
+> 所以**下一次纯重跑预计只要 20-40 分钟** —— 因为所有包都能命中 ccache 了。
+
+### 9.4 超时防护（已实施，防 GitHub 6h 硬杀）
+
+| 层级 | 设置 | 作用 |
+|---|---|---|
+| job | `timeout-minutes: 355` | 防 GitHub 6h 硬杀（硬杀 = 产物全丢） |
+| step | `timeout-minutes: 330` | 5.5h 中断 |
+| 命令 | `timeout --signal=SIGINT --kill-after=120s 320m make` | **5h20m 主动退出**（核心） |
+| ccache 保存 | `actions/cache/save` + `if: always()` | **超时也保存缓存** |
+
+**为什么要这样**：GitHub 单 job 硬限 **6 小时**，超时直接 kill、产物全丢。
+所以用 `timeout 320m` 主动中断 `make`，让流程**能继续执行后面的「保存 ccache」步骤**，
+下次重跑才能接着上次进度。
+
+> 📄 详细历史数据见 [`config/BUILD-TIMING-NOTES.md`](config/BUILD-TIMING-NOTES.md)
+
+## 十、开发说明
 
 ```
 .
@@ -196,8 +360,8 @@ ls /usr/lib/lua/luci/i18n/ | grep dockerman   # 中文语言包存在
 │       ├── config
 │       └── files/
 ├── files/                               # ⭐ 全量路线的自定义 overlay 注入
-│   ├── etc/docker/daemon.json
-│   └── etc/uci-defaults/99-docker-dataroot
+│   ├── etc/sysctl.d/99-docker.conf      # Docker bridge netfilter 开关
+│   └── etc/uci-defaults/99-docker-flippy   # ⭐ Docker 首启初始化（移植自 flippy）
 └── README.md
 ```
 
@@ -205,9 +369,13 @@ ls /usr/lib/lua/luci/i18n/ | grep dockerman   # 中文语言包存在
 **调整 rootfs 大小**：编辑工作流的 `openwrt_size`（默认 `3072` MiB）。
 **新增插件（全量）**：加入 `config/lede_master/config`，格式 `CONFIG_PACKAGE_xxx=y`。
 **新增插件（轻量）**：加入 `config/imagebuilder/config`，格式 `CONFIG_PACKAGE_xxx=y`。
-**新增 overlay 文件（全量）**：放入仓库根 `files/`（workflow 自动 `mv files openwrt/files`）。
+**新增 overlay 文件（全量）**：放入仓库根 `files/`。
 
-## 十、致谢
+> ⚠️ **踩过的坑**：lede 路线下**仓库根 `files/` 不会被自动注入**（openwrt 的 `files/` 在 `openwrt/` 目录下，
+> 而仓库根在两级之外）。所以必须**在 `diy-part2.sh` 里显式 `cp -rf` 到 `package/base-files/files/`**。
+> 见 `diy-part2.sh` 末尾的注入段。
+
+## 十一、致谢
 
 - [ophub/amlogic-s9xxx-openwrt](https://github.com/ophub/amlogic-s9xxx-openwrt) — Amlogic 打包体系
 - [ophub/kernel](https://github.com/ophub/kernel) — 内核
@@ -215,6 +383,6 @@ ls /usr/lib/lua/luci/i18n/ | grep dockerman   # 中文语言包存在
 - [haiibo/OpenWrt](https://github.com/haiibo/OpenWrt) — 项目理念来源
 - OpenWrt / ImmortalWrt 上游
 
-## 十一、许可
+## 十二、许可
 
 GPL-2.0
