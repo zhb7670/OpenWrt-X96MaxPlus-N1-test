@@ -195,7 +195,79 @@ docker run --rm hello-world
 - Docker 的网段是 `172.31.0.1/24`，**别让路由器/其他设备也用这个网段**。
 - 首次拉镜像建议先用 `hello-world` 小镜像验证网络通了。
 
-## 五、刷机方法
+## 五、FileBrowser / Alist 说明（大白话版）
+
+### 5.1 FileBrowser —— 双版本设计
+
+**为什么要两个？** 因为内置版太老了。
+
+| 版本 | 来源 | 版本号 | 端口 | 说明 |
+|---|---|---|---|---|
+| **内置版** | coolsnowwolf/packages | **2.28.0**（2022 年） | 8080 | 编译进固件，开箱即用 |
+| **外部版** | 官方 GitHub Release | **2.63.23**（最终版） | 8088 | 手动放二进制，可热替换 |
+
+> ⚠️ **上游包常年不更新版本号**，导致固件里长期停在 4 年前的 `2.28.0`。
+> 官方最终版是 `2.63.23`，**相差 35 个版本**。
+> 📢 注意：**FileBrowser 官方项目已于 2026-09-01 归档**，不再有新版本与安全修复。
+
+**外部版的三个好处**：
+
+| 好处 | 说明 |
+|---|---|
+| **零编译热替换** | 直接换二进制，**不用重编 5 小时固件** |
+| **端口可改** | uci 改一下重启即可 |
+| **挂载路径可改** | 想让 filebrowser 只管某个目录？改 `root_path` |
+| **可导入任意二进制** | `--local` 导入 fork / 自编译版 |
+
+### 5.2 怎么用（照抄即可）
+
+```sh
+# ① 启用外部版（默认关闭，避免和内置版抢端口）
+uci set filebrowser-ext.@global[0].enable='1'
+uci set filebrowser-ext.@global[0].port='8088'
+uci set filebrowser-ext.@global[0].root_path='/mnt/mmcblk1p4'   # 只管理这个目录
+uci commit filebrowser-ext
+/etc/init.d/filebrowser-ext enable
+/etc/init.d/filebrowser-ext start
+
+# ② 升级到官方最新（最终）版 —— 零编译
+filebrowser-update                 # 自动探测架构，下载最新版
+filebrowser-update 2.63.23         # 指定版本
+filebrowser-update --local /path/to/filebrowser   # 用本地二进制
+
+# ③ 看状态
+/etc/init.d/filebrowser-ext status
+```
+
+**外部二进制放在哪？** 首启自动探测大分区：
+
+```
+/mnt/<磁盘>4  →  /mnt/<磁盘>3  →  /mnt/mmcblk1p4  →  /mnt/mmcblk2p4
+找不到则回退 /opt/filebrowser
+```
+
+### 5.3 Alist —— 活跃项目，完整可用
+
+| 项 | 值 |
+|---|---|
+| 主程序 | `alist`（参考机实测 `3.34.0-6`） |
+| 界面 | `luci-app-alist` + `luci-i18n-alist-zh-cn`（中文） |
+| 数据目录 | **自动软链到 /mnt 大分区**，不占 3G rootfs |
+| 更新 | 上游活跃，随 feed 更新 |
+
+**Alist 是做什么的**：把各种云盘/网盘挂载到本地，支持 WebDAV，可以当多存储聚合网关用。
+
+### 5.4 🛡️ 安全设计（两个脚本一致）
+
+```
+✅ 只做：探测大分区 → mkdir → 迁移 → 软链
+❌ 绝不做：任何破坏性磁盘操作
+✅ 找不到大分区 → 回退，不破坏现网
+✅ 幂等：重复执行安全，不覆盖你改过的 uci 配置
+✅ 外部版默认 enable=0 → 不启用则零资源占用
+```
+
+## 六、刷机方法
 
 ### 1. 下载
 从 [Releases](../../releases) 下载对应设备的 `.img.gz` 文件。
@@ -225,7 +297,7 @@ gunzip -c openwrt_lede_amlogic_s905x3-x96max_k6.18.55_*.img.gz | \
 2. `系统` → `Amlogic 服务` → `安装 OpenWrt` → 选择目标 eMMC
 3. 安装完成后拔掉 SD 卡重启
 
-## 六、恢复 / 救砖
+## 七、恢复 / 救砖
 
 | 情况 | 恢复方法 |
 |---|---|
@@ -236,7 +308,7 @@ gunzip -c openwrt_lede_amlogic_s905x3-x96max_k6.18.55_*.img.gz | \
 
 > 强烈建议刷机前备份原厂固件与 MAC 地址。
 
-## 七、刷机后验证
+## 八、刷机后验证
 
 ```sh
 # ① 千兆有线网口（期望 1000Mb/s）
@@ -252,7 +324,7 @@ docker version                        # 客户端+服务端均正常
 ls /usr/lib/lua/luci/i18n/ | grep dockerman   # 中文语言包存在
 ```
 
-## 八、路线图
+## 九、路线图
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -265,7 +337,7 @@ ls /usr/lib/lua/luci/i18n/ | grep dockerman   # 中文语言包存在
 > 原则：**先保证编译成功 → 镜像生成 → DTB 正确 → 刷机启动，再逐步加入插件。**
 > 若某插件无法编译，记录原因，不强行塞入导致整个矩阵失败。
 
-## 九、自动构建
+## 十、自动构建
 
 - **主力（全量）**：Actions → `Build OpenWrt from Source (X96Max+ / N1)` → Run workflow
 - **轻量（精简）**：Actions → `Build OpenWrt (X96Max+ / N1)` → Run workflow
@@ -342,7 +414,7 @@ Cache size:     1.1 GiB / 5.0 GiB
 
 > 📄 详细历史数据见 [`config/BUILD-TIMING-NOTES.md`](config/BUILD-TIMING-NOTES.md)
 
-## 十、开发说明
+## 十一、开发说明
 
 ```
 .
@@ -361,7 +433,11 @@ Cache size:     1.1 GiB / 5.0 GiB
 │       └── files/
 ├── files/                               # ⭐ 全量路线的自定义 overlay 注入
 │   ├── etc/sysctl.d/99-docker.conf      # Docker bridge netfilter 开关
-│   └── etc/uci-defaults/99-docker-flippy   # ⭐ Docker 首启初始化（移植自 flippy）
+│   ├── etc/init.d/filebrowser-ext       # ⭐ FileBrowser 外部二进制服务
+│   └── etc/uci-defaults/
+│       ├── 99-docker-flippy             # Docker 首启初始化（移植自 flippy）
+│       ├── 99-filebrowser-external      # ⭐ FileBrowser 外部版首启 + 升级工具
+│       └── 99-alist-datadir             # ⭐ Alist 数据目录重定向到大分区
 └── README.md
 ```
 
@@ -375,7 +451,7 @@ Cache size:     1.1 GiB / 5.0 GiB
 > 而仓库根在两级之外）。所以必须**在 `diy-part2.sh` 里显式 `cp -rf` 到 `package/base-files/files/`**。
 > 见 `diy-part2.sh` 末尾的注入段。
 
-## 十一、致谢
+## 十二、致谢
 
 - [ophub/amlogic-s9xxx-openwrt](https://github.com/ophub/amlogic-s9xxx-openwrt) — Amlogic 打包体系
 - [ophub/kernel](https://github.com/ophub/kernel) — 内核
@@ -383,6 +459,6 @@ Cache size:     1.1 GiB / 5.0 GiB
 - [haiibo/OpenWrt](https://github.com/haiibo/OpenWrt) — 项目理念来源
 - OpenWrt / ImmortalWrt 上游
 
-## 十二、许可
+## 十三、许可
 
 GPL-2.0
