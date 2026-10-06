@@ -100,6 +100,8 @@ CONFIG_PACKAGE_luci-app-kodexplorer=y
 CONFIG_PACKAGE_luci-app-nfs=y
 CONFIG_PACKAGE_luci-app-verysync=y
 CONFIG_PACKAGE_luci-app-alist=y
+# alist 主程序 (luci-app-alist 的 LUCI_DEPENDS:=+alist 会带进来, 此处显式声明防漂移)
+CONFIG_PACKAGE_alist=y
 # CONFIG_PACKAGE_luci-app-qbittorrent=y   # 依赖主包 qbittorrent(C++ 重包)在 lede 未默认启用, 导致 opkg 依赖缺失; 暂时禁用
 CONFIG_PACKAGE_luci-app-usb-printer=y
 CONFIG_PACKAGE_luci-app-p910nd=y
@@ -138,6 +140,11 @@ CONFIG_PACKAGE_luci-app-wrtbwmon=y
 CONFIG_PACKAGE_luci-app-sqm=y
 CONFIG_PACKAGE_luci-app-socat=y
 CONFIG_PACKAGE_luci-app-nlbwmon=y
+
+# ==================== X96MaxPlus-N1 : 中文语言包 (i18n) ====================
+# 参考机 192.168.1.60 已装, 本仓库此前遗漏, 补齐
+CONFIG_PACKAGE_luci-i18n-alist-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-filebrowser-zh-cn=y
 EOF
 
 echo "[diy-part2] Plugin list appended. Total lines in .config: $(wc -l < .config)"
@@ -153,12 +160,11 @@ if [ -d "${REPO_ROOT}/files" ]; then
     echo "[diy-part2] Repo root: ${REPO_ROOT}"
     echo "[diy-part2] Injecting custom files/ into package/base-files/files/ ..."
     cp -rf "${REPO_ROOT}/files/." package/base-files/files/
-    # uci-defaults 必须可执行
+    # uci-defaults / init.d 脚本必须可执行
     find package/base-files/files/etc/uci-defaults -type f -exec chmod +x {} \; 2>/dev/null || true
+    find package/base-files/files/etc/init.d -type f -exec chmod +x {} \; 2>/dev/null || true
     echo "[diy-part2] Injected files:"
-    # 注意: etc/docker/daemon.json 由 99-docker-flippy 首次启动时生成, 仓库里不存在,
-    # 故这里用模式匹配而非固定目录, 且容忍 find 非 0 退出 (bash -e 下会致命)
-    find package/base-files/files/etc -type f \( -name '99-docker*' -o -name '*docker*.json' -o -name '99-docker.conf' \) 2>/dev/null || true
+    find package/base-files/files/etc -type f \( -name '99-*' -o -name '*docker*.json' -o -name '99-docker.conf' -o -name 'filebrowser*' -o -name 'alist*' \) 2>/dev/null | sort || true
 else
     echo "[diy-part2] WARNING: ${REPO_ROOT}/files not found, skip injection"
 fi
