@@ -1,0 +1,69 @@
+#!/bin/sh
+#======================================================================================
+# OpenWrt-X96MaxPlus-N1  -  Alist 数据目录初始化 (first boot, 幂等, 非破坏)
+#
+# 目的:
+#   Alist 默认把数据(/etc/alist/data.db)和本地存储放 rootfs (仅 3G),
+#   本脚本把 alist 的配置/数据库目录软链到大容量数据分区, 防止 rootfs 被撑爆。
+#
+# 设计原则 (与 99-docker-flippy 一致):
+#   - 只做: 探测大分区 -> mkdir -> 迁移已存在的数据 -> 软链
+#   - 绝不执行任何分区(parted/fdisk)或格式化(mkfs)操作
+#   - 找不到大分区时保持原样, 不做任何改动 (非破坏)
+#   - 幂等: 重复执行安全
+#======================================================================================
+
+# ---- ① 定位根分区所在磁盘, 推导 p3/p4 ----
+ROOT_PTNAME=$(df / | tail -n1 | awk '{print $1}' | awk -F '/' '{print $3}')
+case "$ROOT_PTNAME" in
+    mmcblk?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//');      PT_PRE="${DISK}p" ;;
+    nvme?n?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//');      PT_PRE="${DISK}p" ;;
+    [hsv]d[a-z][1-9]*) DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');       PT_PRE="${DISK}"  ;;
+    *)                 DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');       PT_PRE="${DISK}"  ;;
+esac
+
+# ---- ② 探测已挂载的大容量数据分区 ----
+DATA_MNT=""
+for cand in "/mnt/${PT_PRE}4" "/mnt/${PT_PRE}3" "/mnt/mmcblk1p4" "/mnt/mmcblk2p4"; do
+    [ -n "$cand" ] || continue
+    if mountpoint -q "$cand" 2>/dev/null || grep -q " ${cand} " /proc/mounts 2>/dev/null; then
+        DATA_MNT="$cand"
+        break
+    fi
+done
+
+# ---- ③ 未找到大分区则什么都不做 (保持 alist 默认行为) ----
+if [ -z "$DATA_MNT" ]; then
+    logger -t alist-init "No large partition found, keep alist default data dir (no change)"
+    exit 0
+fi
+
+ALIST_DST="${DATA_MNT}/alist"
+mkdir -p "$ALIST_DST"
+logger -t alist-init "Detected large partition: ${DATA_MNT} -> alist data dir ${ALIST_DST}"
+
+# ---- ④ 迁移 /etc/alist -> 大分区 + 软链 (仅当尚未软链且目录存在) ----
+if [ -d /etc/alist ] && [ ! -L /etc/alist ]; then
+    # 把已有数据搬过去 (仅在目标为空时, 避免覆盖)
+    if [ -z "$(ls -A "$ALIST_DST" 2>/dev/null)" ]; then
+        cp -a /etc/alist/. "$ALIST_DST/" 2>/dev/null
+        logger -t alist-init "Migrated /etc/alist -> ${ALIST_DST}"
+    fi
+    rm -rf /etc/alist
+    ln -sf "$ALIST_DST" /etc/alist
+    logger -t alist-init "Linked /etc/alist -> ${ALIST_DST}"
+elif [ ! -e /etc/alist ]; then
+    # 包还没装出目录: 预建软链, 让 alist 首次启动直接写到大分区
+    ln -sf "$ALIST_DST" /etc/alist
+    logger -t alist-init "Pre-created /etc/alist -> ${ALIST_DST}"
+fi
+
+# ---- ⑤ uci 配置 (alist 的 data dir / 本地存储路径) ----
+if [ -f /etc/config/alist ] || uci -q show alist >/dev/null 2>&1; then
+    uci -q get alist.@alist[0] >/dev/null 2>&1 || uci -q add alist alist
+    uci -q get alist.@alist[0].data_dir >/dev/null 2>&1 || uci -q set alist.@alist[0].data_dir="$ALIST_DST"
+    uci -q commit alist
+    logger -t alist-init "uci alist.@alist[0].data_dir = ${ALIST_DST}"
+fi
+
+exit 0

@@ -1,0 +1,100 @@
+#!/bin/sh /etc/rc.common
+#======================================================================================
+# FileBrowser 外部二进制服务 (OpenWrt-X96MaxPlus-N1)
+#
+# 与内置版 luci-app-filebrowser-go 的关系:
+#   - 内置版: 由 /etc/init.d/filebrowser 管理 (端口 8080, 二进制来自 opkg 包)
+#   - 本服务: 管理 project_directory 下的外部二进制 (默认端口 8088)
+#   - 两者端口必须不同, 默认 8080 / 8088 已错开
+#   - 本服务默认 enable=0, 不启用时不占任何资源
+#
+# 移植自参考机 (192.168.1.60) 的 /etc/init.d/filebrowser 逻辑并增强:
+#   + uci 命名空间改为 filebrowser-ext, 避免与内置版冲突
+#   + 增加 enable 开关 / 版本检查 / 优雅重启
+#======================================================================================
+
+START=99
+STOP=10
+
+LOG_PATH="/var/log/filebrowser-ext.log"
+
+config_t_get() {
+    local ret
+    ret=$(uci -q get "filebrowser-ext.@global[0].$1")
+    echo "${ret:=$2}"
+}
+
+is_running() {
+    pidof filebrowser >/dev/null 2>&1
+}
+
+start() {
+    local ENABLED PORT ROOT_PATH PROJ DB
+    ENABLED=$(config_t_get enable 0)
+    [ "$ENABLED" = "0" ] && return 0
+
+    PORT=$(config_t_get port 8088)
+    ROOT_PATH=$(config_t_get root_path /)
+    PROJ=$(config_t_get project_directory /opt/filebrowser)
+    DB=$(config_t_get db_path "${PROJ}/filebrowser.db")
+
+    if [ ! -x "$PROJ/filebrowser" ]; then
+        echo "在 $PROJ 找不到可执行的 filebrowser 主程序。" >> "$LOG_PATH"
+        echo "请先运行: filebrowser-update" >> "$LOG_PATH"
+        return 1
+    fi
+
+    # 端口占用检查 (避免和内置版 8080 撞车)
+    if netstat -ln 2>/dev/null | grep -q ":${PORT} "; then
+        echo "端口 ${PORT} 已被占用, 启动中止。请改 uci: filebrowser-ext.@global[0].port" >> "$LOG_PATH"
+        return 1
+    fi
+
+    export HOME="/root"
+    "$PROJ/filebrowser" \
+        -a 0.0.0.0 \
+        -p "$PORT" \
+        -r "$ROOT_PATH" \
+        -d "$DB" \
+        -l "$LOG_PATH" \
+        >>"$LOG_PATH" 2>&1 &
+
+    sleep 1
+    if is_running; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): started on port ${PORT}, root=${ROOT_PATH}, dir=${PROJ}" >> "$LOG_PATH"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): FAILED to start" >> "$LOG_PATH"
+        return 1
+    fi
+}
+
+stop() {
+    local PROJ
+    PROJ=$(config_t_get project_directory /opt/filebrowser)
+    if [ -n "$PROJ" ]; then
+        busybox ps -w 2>/dev/null | grep -v grep | grep "$PROJ/filebrowser -a 0.0.0.0" \
+            | awk '{print $1}' | xargs -r kill -9 >/dev/null 2>&1
+    fi
+    # 兜底: 按可执行名清理
+    killall -9 filebrowser >/dev/null 2>&1 || true
+    return 0
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+status() {
+    if [ "$(config_t_get enable 0)" != "1" ]; then
+        echo "filebrowser-ext: disabled"
+        return 1
+    fi
+    if is_running; then
+        echo "filebrowser-ext: running on port $(config_t_get port 8088)"
+        return 0
+    fi
+    echo "filebrowser-ext: stopped (enabled)"
+    return 1
+}

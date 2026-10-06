@@ -1,0 +1,134 @@
+#!/bin/sh
+#======================================================================================
+# OpenWrt-X96MaxPlus-N1  -  FileBrowser 初始化 (first boot, 幂等, 非破坏)
+#
+# 目的:
+#   luci-app-filebrowser-go 内置版(编译进固件, 端口 8080) 保底可用;
+#   本脚本额外建立"外部二进制"机制, 让用户可以不重新编译固件、
+#   直接替换 /mnt/<大分区>/filebrowser 并重启服务来升级到官方最新版。
+#
+# 设计原则 (与 99-docker-flippy 一致):
+#   - 只做: 探测大容量数据分区 -> mkdir -> 写默认 uci -> 不改动内置版配置
+#   - 绝不执行任何分区(parted/fdisk)或格式化(mkfs)操作
+#   - 找不到大分区时回退根分区 /opt/filebrowser (非破坏)
+#   - 幂等: 重复执行安全; 已存在的用户配置不覆盖
+#======================================================================================
+
+# ---- ① 定位根分区所在磁盘, 推导 p3/p4 ----
+ROOT_PTNAME=$(df / | tail -n1 | awk '{print $1}' | awk -F '/' '{print $3}')
+case "$ROOT_PTNAME" in
+    mmcblk?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//');      PT_PRE="${DISK}p" ;;
+    nvme?n?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//');      PT_PRE="${DISK}p" ;;
+    [hsv]d[a-z][1-9]*) DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');       PT_PRE="${DISK}"  ;;
+    *)                 DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');       PT_PRE="${DISK}"  ;;
+esac
+
+# ---- ② 自动探测已挂载的大容量数据分区 (优先 p4, 再 p3, 最后兜底常见名) ----
+DATA_MNT=""
+for cand in "/mnt/${PT_PRE}4" "/mnt/${PT_PRE}3" "/mnt/mmcblk1p4" "/mnt/mmcblk2p4"; do
+    [ -n "$cand" ] || continue
+    if mountpoint -q "$cand" 2>/dev/null || grep -q " ${cand} " /proc/mounts 2>/dev/null; then
+        DATA_MNT="$cand"
+        break
+    fi
+done
+
+if [ -n "$DATA_MNT" ]; then
+    EXP_DIR="${DATA_MNT}/filebrowser"
+    logger -t filebrowser-init "Detected large partition: ${DATA_MNT} -> external dir ${EXP_DIR}"
+else
+    EXP_DIR="/opt/filebrowser"
+    logger -t filebrowser-init "No large partition found, fallback external dir ${EXP_DIR}"
+fi
+mkdir -p "$EXP_DIR"
+
+# ---- ③ 写默认 uci (仅当不存在时; 幂等, 不覆盖用户既有配置) ----
+#   注意: 只 get 不 set 既有项 -> 用户改过端口/路径不会被首启重置
+if [ ! -f /etc/config/filebrowser-ext ]; then
+    touch /etc/config/filebrowser-ext
+fi
+
+uci -q get filebrowser-ext.@global[0] >/dev/null 2>&1 || uci -q add filebrowser-ext global
+uci -q get filebrowser-ext.@global[0].enable        >/dev/null 2>&1 || uci -q set filebrowser-ext.@global[0].enable='0'
+uci -q get filebrowser-ext.@global[0].port          >/dev/null 2>&1 || uci -q set filebrowser-ext.@global[0].port='8088'
+uci -q get filebrowser-ext.@global[0].root_path     >/dev/null 2>&1 || uci -q set filebrowser-ext.@global[0].root_path='/'
+uci -q get filebrowser-ext.@global[0].project_directory >/dev/null 2>&1 || uci -q set filebrowser-ext.@global[0].project_directory="$EXP_DIR"
+uci -q get filebrowser-ext.@global[0].log_path      >/dev/null 2>&1 || uci -q set filebrowser-ext.@global[0].log_path='/var/log/filebrowser-ext.log'
+uci -q get filebrowser-ext.@global[0].db_path       >/dev/null 2>&1 || uci -q set filebrowser-ext.@global[0].db_path="${EXP_DIR}/filebrowser.db"
+uci -q commit filebrowser-ext
+
+logger -t filebrowser-init "uci /etc/config/filebrowser-ext ready (enable=0 by default, 不干扰内置版)"
+
+# ---- ④ 提供便捷升级脚本 (不自动下载, 只放工具) ----
+cat > /usr/bin/filebrowser-update <<'UPDEOF'
+#!/bin/sh
+#======================================================================================
+# FileBrowser 外部二进制一键升级 (零编译)
+#
+# 用法:
+#   filebrowser-update                 # 自动探测架构, 下载官方最新版到 project_directory
+#   filebrowser-update 2.31.2          # 指定版本
+#   filebrowser-update --local /path/to/filebrowser   # 使用本地已有二进制
+#
+# 说明:
+#   - 只写入 uci 里配置的 project_directory, 不碰固件内置版
+#   - 下载后自动 chmod +x, 若服务已启用则自动重启
+#   - 架构映射: aarch64 -> arm64, x86_64 -> amd64, armv7l -> armv7
+#======================================================================================
+set -e
+
+PROJ=$(uci -q get filebrowser-ext.@global[0].project_directory)
+[ -n "$PROJ" ] || PROJ=/opt/filebrowser
+VER=$(uci -q get filebrowser-ext.@global[0].version)
+[ -n "$VER" ] || VER="latest"
+
+if [ "$1" = "--local" ]; then
+    SRC="$2"
+    [ -f "$SRC" ] || { echo "错误: 找不到 $SRC"; exit 1; }
+    mkdir -p "$PROJ"
+    cp -f "$SRC" "$PROJ/filebrowser"
+    chmod +x "$PROJ/filebrowser"
+    echo "✅ 已从本地导入: $SRC -> $PROJ/filebrowser"
+else
+    [ -n "$1" ] && VER="$1"
+    ARCH_RAW=$(uname -m)
+    case "$ARCH_RAW" in
+        aarch64)  ARCH=arm64 ;;
+        x86_64)   ARCH=amd64 ;;
+        armv7l)   ARCH=armv7 ;;
+        armv6l)   ARCH=armv6 ;;
+        *)        ARCH="$ARCH_RAW" ;;
+    esac
+    if [ "$VER" = "latest" ]; then
+        URL="https://github.com/filebrowser/filebrowser/releases/latest/download/linux-${ARCH}-filebrowser.tar.gz"
+    else
+        URL="https://github.com/filebrowser/filebrowser/releases/download/v${VER}/linux-${ARCH}-filebrowser.tar.gz"
+    fi
+    echo "架构: $ARCH_RAW -> $ARCH"
+    echo "版本: $VER"
+    echo "下载: $URL"
+    TMP=$(mktemp -d)
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --connect-timeout 15 -o "$TMP/fb.tar.gz" "$URL" || { echo "❌ 下载失败"; rm -rf "$TMP"; exit 1; }
+    else
+        wget -O "$TMP/fb.tar.gz" "$URL" || { echo "❌ 下载失败"; rm -rf "$TMP"; exit 1; }
+    fi
+    tar -xzf "$TMP/fb.tar.gz" -C "$TMP" filebrowser || { echo "❌ 解压失败"; rm -rf "$TMP"; exit 1; }
+    mkdir -p "$PROJ"
+    cp -f "$TMP/filebrowser" "$PROJ/filebrowser"
+    chmod +x "$PROJ/filebrowser"
+    rm -rf "$TMP"
+    echo "✅ 已安装: $PROJ/filebrowser"
+fi
+
+"$PROJ/filebrowser" version 2>/dev/null || true
+
+if [ "$(uci -q get filebrowser-ext.@global[0].enable)" = "1" ]; then
+    /etc/init.d/filebrowser-ext restart && echo "✅ 服务已重启"
+fi
+UPDEOF
+chmod +x /usr/bin/filebrowser-update
+
+logger -t filebrowser-init "Installed /usr/bin/filebrowser-update (零编译升级工具)"
+
+exit 0
