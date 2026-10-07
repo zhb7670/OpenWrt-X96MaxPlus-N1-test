@@ -125,6 +125,14 @@ CONFIG_PACKAGE_luci-app-p910nd=y
 CONFIG_PACKAGE_luci-app-minidlna=y
 CONFIG_PACKAGE_luci-app-vsftpd=y
 CONFIG_PACKAGE_luci-app-transmission=y
+# ⚠️ Transmission 主程序 (luci-app-transmission 只是前端壳, 必须显式选中主程序;
+#    否则 config 里被 base 模板显式 "# ... is not set" 关闭 → 固件残留空壳, 服务跑不起来)
+#    [added 2026-10-07] 与 adblock/smartdns 同款坑: 壳有、主程序被 config 显式关闭
+#    目标: 能用(daemon) + 能开能关(web 界面) 即可, 不选 cli/remote/web-control
+#    回滚: 删掉下面两行即可, 或 git revert 本次 commit
+#    回滚点: main @ daf015c7e0315dcc0b532f515630adae0266a80c
+CONFIG_PACKAGE_transmission-daemon=y
+CONFIG_PACKAGE_transmission-web=y
 CONFIG_PACKAGE_luci-app-mjpg-streamer=y
 CONFIG_PACKAGE_luci-app-rclone=y
 CONFIG_PACKAGE_luci-app-aria2=y
@@ -492,3 +500,31 @@ for pkg in luci-app-smartdns smartdns smartdns-ui; do
 done
 [ "$SD_OK" = "1" ] && echo "[diy-part2] SmartDNS 主程序启用校验: OK" || echo "[diy-part2] WARNING: SmartDNS 启用校验未全部通过, 请查上游 config 结构"
 echo "[diy-part2] === SmartDNS 修复段完成 ==="
+
+#=====================================================================================
+# Transmission 启用修复 (双保险)   [added 2026-10-07]
+#   问题: 只写了 CONFIG_PACKAGE_luci-app-transmission=y (壳), 主程序
+#         transmission-daemon / transmission-web 在 base config 里被显式
+#         "# ... is not set" 关闭 → 固件残留空壳, 服务起不来。
+#         (与 adblock/smartdns/kodexplorer 同款坑)
+#
+#   本段: 解除 base config 中几条显式关闭 (sed 就地改写, 幂等)。
+#         与本脚本上方 .config 追加段形成双保险:
+#           ① 上方 cat >> .config 追加 CONFIG_PACKAGE_transmission-daemon=y / -web=y
+#           ② 本段 sed 掉 config 模板里的 is not set
+#         二者叠加, 无论 config 归一化顺序如何都能生效。
+#
+#   回滚: 删除本段 + 上方 transmission 两行即可, 或 git revert 本次 commit
+#   回滚点: main @ daf015c7e0315dcc0b532f515630adae0266a80c
+#=====================================================================================
+echo "[diy-part2] === Transmission: 解除 base config 显式关闭 ==="
+for pkg in luci-app-transmission transmission-daemon transmission-web; do
+    sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
+done
+# 校验: 3 项应全部为 =y
+TR_OK=1
+for pkg in luci-app-transmission transmission-daemon transmission-web; do
+    grep -q "^CONFIG_PACKAGE_${pkg}=y" .config || { echo "[diy-part2] WARNING: ${pkg} 未变为 =y"; TR_OK=0; }
+done
+[ "$TR_OK" = "1" ] && echo "[diy-part2] Transmission 主程序启用校验: OK" || echo "[diy-part2] WARNING: Transmission 启用校验未全部通过, 请查上游 config 结构"
+echo "[diy-part2] === Transmission 修复段完成 ==="
