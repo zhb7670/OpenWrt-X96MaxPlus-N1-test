@@ -76,7 +76,14 @@ CONFIG_PACKAGE_luci-app-adblock=y
 # ⚠️ adblock 主程序 (luci-app-adblock 只是壳, LUCI_DEPENDS:=+adblock 需显式选中;
 #    否则固件里会残留 base 里的 4.1.5 老版, 与 4.5.x 前端接口不匹配 → 界面功能失效)
 CONFIG_PACKAGE_adblock=y
-CONFIG_PACKAGE_luci-app-adguardhome=y
+# ⚠️ AdGuardHome 已弃用 [removed 2026-10-07]
+#   原因: 与 SmartDNS 功能重叠(去广告已由 adblock 承担), 且在本固件从未初始化成功
+#         (无配置文件/3000端口未起/53被 dnsmasq 占用), Go 程序常驻内存, 盒子资源有限。
+#   决策: 留 SmartDNS(DNS测速加速) + adblock(去广告); 移除 AGH。
+#   回滚: 改回 CONFIG_PACKAGE_luci-app-adguardhome=y 即可, 或 git revert 本次 commit
+#   回滚点: main @ e45aad8ff6357c0a249671cde2881a894e663a79
+# 显式写 is not set (而非删行), 防止 base config 模板残留 =y 又把它带回来
+# CONFIG_PACKAGE_luci-app-adguardhome is not set
 CONFIG_PACKAGE_luci-app-ssr-plus=y
 CONFIG_PACKAGE_luci-app-wechatpush=y
 CONFIG_PACKAGE_luci-app-timecontrol=y
@@ -84,6 +91,13 @@ CONFIG_PACKAGE_luci-app-pushbot=y
 CONFIG_PACKAGE_luci-app-unblockmusic=y
 CONFIG_PACKAGE_luci-app-openclash=y
 CONFIG_PACKAGE_luci-app-smartdns=y
+# ⚠️ SmartDNS 主程序 (luci-app-smartdns 只是前端壳, 必须显式选中主程序;
+#    否则 config 里被 base 模板显式 "# ... is not set" 关闭 → 固件残留空壳, 服务跑不起来)
+#    [added 2026-10-07] 与 adblock 同款坑: 壳有、主程序被 config 显式关闭
+#    回滚: 删掉下面两行即可, 或 git revert 本次 commit
+#    回滚点: main @ e45aad8ff6357c0a249671cde2881a894e663a79
+CONFIG_PACKAGE_smartdns=y
+CONFIG_PACKAGE_smartdns-ui=y
 CONFIG_PACKAGE_luci-app-xlnetacc=y
 CONFIG_PACKAGE_luci-app-watchcat=y
 CONFIG_PACKAGE_luci-app-UUGameAcc=y
@@ -451,3 +465,30 @@ else
     echo "[diy-part2] WARNING: ${ADB_DIR}/Makefile 未找到 (feeds 未拉取?), 跳过 adblock 段"
 fi
 echo "[diy-part2] === adblock 修复段完成 ==="
+
+#=====================================================================================
+# SmartDNS 启用修复 (双保险)   [added 2026-10-07]
+#   问题: 只写了 CONFIG_PACKAGE_luci-app-smartdns=y (壳), 主程序在 base config
+#         里被显式 "# ... is not set" 关闭 → 固件残留空壳, 服务跑不起来。
+#         (与 adblock 同款坑; SmartDNS 为本固件的 DNS 加速方案, AGH 已弃用)
+#
+#   本段: 解除 base config 中几条显式关闭 (sed 就地改写, 幂等)。
+#         与本脚本上方 .config 追加段形成双保险:
+#           ① 上方 cat >> .config 追加 CONFIG_PACKAGE_smartdns=y / smartdns-ui=y
+#           ② 本段 sed 掉 config 模板里的 is not set
+#         二者叠加, 无论 config 归一化顺序如何都能生效。
+#
+#   回滚: 删除本段 + 上方 smartdns 三行即可, 或 git revert 本次 commit
+#   回滚点: main @ e45aad8ff6357c0a249671cde2881a894e663a79
+#=====================================================================================
+echo "[diy-part2] === SmartDNS: 解除 base config 显式关闭 ==="
+for pkg in luci-app-smartdns luci-app-smartdns_INCLUDE_WebUI smartdns smartdns-ui; do
+    sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
+done
+# 校验: 4 项应全部为 =y
+SD_OK=1
+for pkg in luci-app-smartdns smartdns smartdns-ui; do
+    grep -q "^CONFIG_PACKAGE_${pkg}=y" .config || { echo "[diy-part2] WARNING: ${pkg} 未变为 =y"; SD_OK=0; }
+done
+[ "$SD_OK" = "1" ] && echo "[diy-part2] SmartDNS 主程序启用校验: OK" || echo "[diy-part2] WARNING: SmartDNS 启用校验未全部通过, 请查上游 config 结构"
+echo "[diy-part2] === SmartDNS 修复段完成 ==="
