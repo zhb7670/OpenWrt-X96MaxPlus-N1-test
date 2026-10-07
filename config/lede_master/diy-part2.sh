@@ -136,6 +136,14 @@ CONFIG_PACKAGE_transmission-web=y
 CONFIG_PACKAGE_luci-app-mjpg-streamer=y
 CONFIG_PACKAGE_luci-app-rclone=y
 CONFIG_PACKAGE_luci-app-aria2=y
+# ⚠️ Aria2 主程序 (luci-app-aria2 只是前端壳, 必须显式选中主程序;
+#    否则 config 里被 base 模板显式 "# ... is not set" 关闭 → 固件无 aria2c 二进制,
+#    LuCI 点启动必然失败 —— 这不是配置问题, 是主程序压根没编进固件)
+#    [added 2026-10-07] 与 adblock/smartdns/transmission/xlnetacc 同款坑
+#    回滚: 删掉下面两行即可, 或 git revert 本次 commit
+#    回滚点: main @ aee43ea4bda161d5b1e4966cdc746fa985d99f71
+CONFIG_PACKAGE_aria2=y
+CONFIG_PACKAGE_webui-aria2=y
 CONFIG_PACKAGE_luci-app-cifs-mount=y
 CONFIG_PACKAGE_luci-app-samba4=y
 CONFIG_PACKAGE_samba4-server=y
@@ -590,3 +598,30 @@ echo "[diy-part2] === 迅雷快鸟修复段完成 ==="
 #   `delete ucitrack.@xlnetacc[-1]` 可能报错(但 exit 0 兜底, 危害低)。
 #   若实测界面"保存应用"不触发服务动作, 再回来处理此处。
 #=====================================================================================
+
+#=====================================================================================
+# Aria2 启用修复 (双保险)   [added 2026-10-07]
+#   问题: 只写了 CONFIG_PACKAGE_luci-app-aria2=y (壳), 主程序 aria2 / webui-aria2
+#         在 base config 里被显式 "# ... is not set" 关闭 → 固件无 aria2c 二进制,
+#         LuCI 点启动必然失败(不是配置问题, 是主程序没编进去)。
+#         (与 adblock/smartdns/transmission/xlnetacc 同款坑)
+#
+#   本段: 解除 base config 中几条显式关闭 (sed 就地改写, 幂等)。
+#         与本脚本上方 .config 追加段形成双保险:
+#           ① 上方 cat >> .config 追加 CONFIG_PACKAGE_aria2=y / webui-aria2=y
+#           ② 本段 sed 掉 config 模板里的 is not set
+#
+#   回滚: 删除本段 + 上方 aria2 两行即可, 或 git revert 本次 commit
+#   回滚点: main @ aee43ea4bda161d5b1e4966cdc746fa985d99f71
+#=====================================================================================
+echo "[diy-part2] === Aria2: 解除 base config 显式关闭 ==="
+for pkg in luci-app-aria2 aria2 webui-aria2; do
+    sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
+done
+# 校验
+AR_OK=1
+for pkg in luci-app-aria2 aria2; do
+    grep -q "^CONFIG_PACKAGE_${pkg}=y" .config || { echo "[diy-part2] WARNING: ${pkg} 未变为 =y"; AR_OK=0; }
+done
+[ "$AR_OK" = "1" ] && echo "[diy-part2] Aria2 主程序启用校验: OK" || echo "[diy-part2] WARNING: Aria2 启用校验未通过, 请查上游 config 结构"
+echo "[diy-part2] === Aria2 修复段完成 ==="
