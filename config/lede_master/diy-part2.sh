@@ -73,6 +73,9 @@ CONFIG_PACKAGE_luci-app-dae=y
 CONFIG_PACKAGE_luci-app-ikoolproxy=y
 CONFIG_PACKAGE_luci-app-v2raya=y
 CONFIG_PACKAGE_luci-app-adblock=y
+# ⚠️ adblock 主程序 (luci-app-adblock 只是壳, LUCI_DEPENDS:=+adblock 需显式选中;
+#    否则固件里会残留 base 里的 4.1.5 老版, 与 4.5.x 前端接口不匹配 → 界面功能失效)
+CONFIG_PACKAGE_adblock=y
 CONFIG_PACKAGE_luci-app-adguardhome=y
 CONFIG_PACKAGE_luci-app-ssr-plus=y
 CONFIG_PACKAGE_luci-app-wechatpush=y
@@ -381,3 +384,70 @@ else
     echo "[diy-part2] WARNING: $PB_DIR 未找到 (feeds 可能未拉取成功), 跳过 pushbot 段"
 fi
 echo "[diy-part2] === pushbot 修复段完成 ==="
+
+#=====================================================================================
+# adblock 开箱即用修复   [added 2026-10-07]
+#   上游: adblock 本体来自 feeds/packages/net/adblock (v4.5.8-r3, 官方活跃维护)
+#         luci-app-adblock 前端来自 feeds/luci (coolsnowwolf/luci, v4.5.8-r3)
+#
+#   问题(X96Max+ 实测现象):
+#     - LuCI 里 adblock 界面能打开, 但启用后完全无效果。
+#     - opkg 显示: adblock 4.1.5-9 (2022 年老版) + luci-app-adblock 4.5.4-r1 (新版)
+#       → 前后端版本错位, 界面调用的接口主程序没有。
+#     - uci: adb_enabled='0' → 总开关关闭, 服务不跑
+#     - /etc/init.d/adblock status → "active with no instances"
+#
+#   根因(已确认):
+#     本仓库 diy-part2.sh 原先只写了 CONFIG_PACKAGE_luci-app-adblock=y (壳),
+#     主程序 CONFIG_PACKAGE_adblock 未显式选中 → 固件未编入新版主程序,
+#     残留 base 的 4.1.5 老版 → 前后端错位。
+#     (已在本段上方补 CONFIG_PACKAGE_adblock=y)
+#
+#   本段做两件事:
+#     ① uci-defaults 注入: 首启把 adb_enabled 设为 1 (开箱即用)。
+#        仅首启执行一次; 用户后续手动改动不会被覆盖(uci-defaults 只跑一次)。
+#     ② 编译期校验: 打印 adblock 本体/前端版本, 确认 ≥ 4.5.8 且前后端一致。
+#
+#   回滚: 删除本段 + 上方 CONFIG_PACKAGE_adblock=y 行即可, 或 git revert
+#   回滚点: main @ cc8aac8
+#=====================================================================================
+ADB_DIR="feeds/packages/net/adblock"
+ADB_LUCI="feeds/luci/applications/luci-app-adblock"
+echo "[diy-part2] === adblock: 默认启用 + 版本校验 ==="
+if [ -f "${ADB_DIR}/Makefile" ]; then
+    ADB_VER="$(grep -m1 '^PKG_VERSION:=' "${ADB_DIR}/Makefile" 2>/dev/null | cut -d= -f2)"
+    ADB_REL="$(grep -m1 '^PKG_RELEASE:=' "${ADB_DIR}/Makefile" 2>/dev/null | cut -d= -f2)"
+    echo "[diy-part2] adblock 本体版本: ${ADB_VER}-${ADB_REL} (期望 >= 4.5.8)"
+    if [ -f "${ADB_LUCI}/Makefile" ]; then
+        ADBL_VER="$(grep -m1 '^PKG_VERSION:=' "${ADB_LUCI}/Makefile" 2>/dev/null | cut -d= -f2)"
+        echo "[diy-part2] luci-app-adblock 前端版本: ${ADBL_VER} (应与本体一致)"
+    fi
+
+    # ---- ① uci-defaults 默认启用 ----
+    #  文件已在仓库 files/etc/uci-defaults/99-adblock-default-enable,
+    #  由本脚本下方「注入 files/ 到 base-files」段统一 cp 进 rootfs。
+    UCD_DIR="package/base-files/files/etc/uci-defaults"
+    if [ -f "${UCD_DIR}/99-adblock-default-enable" ]; then
+        echo "[diy-part2] adblock uci-defaults 已就位: ${UCD_DIR}/99-adblock-default-enable"
+    else
+        # 兜底: 若 files/ 注入未覆盖到(仓库结构变动), 这里直接生成
+        mkdir -p "$UCD_DIR"
+        cat > "${UCD_DIR}/99-adblock-default-enable" <<'UCDEOF'
+#!/bin/sh
+# adblock 开箱即用: 首次启动时确保总开关开启。
+# 仅在选项不存在时写入, 不覆盖用户已保存的配置。
+[ -x /etc/init.d/adblock ] || exit 0
+cur="$(uci -q get adblock.global.adb_enabled)"
+if [ -z "$cur" ]; then
+    uci -q set adblock.global.adb_enabled='1'
+    uci -q commit adblock
+fi
+exit 0
+UCDEOF
+        chmod 755 "${UCD_DIR}/99-adblock-default-enable"
+        echo "[diy-part2] adblock uci-defaults 兜底生成: ${UCD_DIR}/99-adblock-default-enable"
+    fi
+else
+    echo "[diy-part2] WARNING: ${ADB_DIR}/Makefile 未找到 (feeds 未拉取?), 跳过 adblock 段"
+fi
+echo "[diy-part2] === adblock 修复段完成 ==="

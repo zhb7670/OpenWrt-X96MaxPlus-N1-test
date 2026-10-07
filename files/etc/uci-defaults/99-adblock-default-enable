@@ -1,0 +1,21 @@
+#!/bin/sh
+#=====================================================================================
+# adblock 开箱即用: 首次启动时确保总开关开启
+#   [added 2026-10-07]  配套 config/lede_master/diy-part2.sh 的 adblock 修复段
+#
+#   背景: 固件里 adblock 主程序原先未被选中(只有 luci-app-adblock 壳),
+#         导致界面可用但功能失效。diy-part2.sh 已补 CONFIG_PACKAGE_adblock=y。
+#   本脚本: 首启兜底打开总开关 adb_enabled=1。
+#         仅在选项不存在时写入 → 不覆盖用户已保存的配置
+#         (uci-defaults 本身只执行一次, 双保险)。
+#=====================================================================================
+
+[ -x /etc/init.d/adblock ] || exit 0
+
+cur="$(uci -q get adblock.global.adb_enabled)"
+if [ -z "$cur" ]; then
+    uci -q set adblock.global.adb_enabled='1'
+    uci -q commit adblock
+fi
+
+exit 0
