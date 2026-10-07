@@ -258,3 +258,30 @@ else
     echo "[diy-part2] WARNING: $VS_INIT not found, skip patch"
 fi
 echo "[diy-part2] === 微力同步修复段完成 ==="
+
+#=====================================================================================
+# Alist 状态误报修复 (LuCI 显示"未运行"但服务实际在跑)   [added 2026-10-07]
+#   问题: alist 主程序来自官方 feed(feeds/packages/net/alist), 其 init 脚本
+#         procd_open_instance 未指定实例名 → procd 自动命名 "instance1";
+#         而三方前端 luci-app-alist 的 basic.js 查的是 instances.alist.running,
+#         名字对不上 → 服务正常运行但 LuCI 永远显示"未运行", 且无"进入界面"按钮。
+#   本段: 编译时给 procd 实例命名为 alist, 与前端匹配
+#         (X96Max+ 实测: sed 两行 + restart 后 ubus 实例名变 alist, LuCI 显示正常)
+#   回滚: 删除本段即可, 或 git revert 本次 commit
+#   回滚点: main @ 4531b283a91b70696377325287ca5e7bc12af461
+#=====================================================================================
+ALIST_INIT="feeds/packages/net/alist/files/alist.init"
+echo "[diy-part2] === Alist: 修 procd 实例名 ==="
+if [ -f "$ALIST_INIT" ]; then
+    cp -f "$ALIST_INIT" "${ALIST_INIT}.orig"
+    sed -i 's/^\tprocd_open_instance$/\tprocd_open_instance alist/' "$ALIST_INIT"
+    sed -i 's/^\tprocd_close_instance$/\tprocd_close_instance alist/' "$ALIST_INIT"
+    if grep -q 'procd_open_instance alist' "$ALIST_INIT"; then
+        echo "[diy-part2] alist init patched OK"
+    else
+        echo "[diy-part2] WARNING: alist init patch 未命中, 请检查上游是否改版"
+    fi
+else
+    echo "[diy-part2] WARNING: $ALIST_INIT not found, skip patch"
+fi
+echo "[diy-part2] === Alist 修复段完成 ==="
