@@ -225,3 +225,36 @@ else
     echo "[diy-part2] WARNING: $KOD_API not found, skip patch"
 fi
 echo "[diy-part2] === 可道云修复段完成 ==="
+
+#=====================================================================================
+# 微力同步 (luci-app-verysync) init 脚本修复   [added 2026-10-07]
+#   问题: 上游 init 脚本(feeds/small/luci-app-verysync) 三处 bug, 导致
+#         `service verysync start` 报 "Killed", 服务起不来:
+#         ① 启动行缺 setsid → 进程是 rc.common wrapper 的子进程, 脚本收尾时被挂断杀死
+#            (★ 真凶, 已在 X96Max+ 路由器实测: 手动加 setsid 即正常)
+#         ② kill -9 `pgrep verysync` → 取不到 PID 时退化为 `kill -9` 无参, 异常
+#         ③ [ "${enabled}" == "1" ] → == 非 POSIX, 应为 =
+#   本段: 编译时 sed 修上游源码文件, 使 luci-app-verysync 包本身就带修复
+#   回滚: 删除本段即可, 或 git revert 本次 commit
+#   回滚点: main @ b5b19f498b49d1cb86404ad678bdcb755438a8f4
+#=====================================================================================
+VS_INIT="feeds/small/luci-app-verysync/root/etc/init.d/verysync"
+echo "[diy-part2] === 微力同步: 修 init 脚本 ==="
+if [ -f "$VS_INIT" ]; then
+    cp -f "$VS_INIT" "${VS_INIT}.orig"
+    # ① 启动行加 setsid (真凶修复)
+    sed -i 's#\tverysync -gui-address#\tsetsid verysync -gui-address#' "$VS_INIT"
+    # ② kill -9 `pgrep verysync` → pkill -9 -x verysync + return 0
+    sed -i 's#\tkill -9 `pgrep verysync` >/dev/null 2>&1#\tpkill -9 -x verysync >/dev/null 2>\&1\n\treturn 0#' "$VS_INIT"
+    # ③ == → = (POSIX)
+    sed -i 's#\[ "${enabled}" == "1" \]#[ "${enabled}" = "1" ]#' "$VS_INIT"
+    # 校验
+    if grep -q 'setsid verysync' "$VS_INIT" && grep -q 'pkill -9 -x verysync' "$VS_INIT"; then
+        echo "[diy-part2] verysync init patched OK"
+    else
+        echo "[diy-part2] WARNING: verysync init patch 不完整, 请检查上游是否改版"
+    fi
+else
+    echo "[diy-part2] WARNING: $VS_INIT not found, skip patch"
+fi
+echo "[diy-part2] === 微力同步修复段完成 ==="
