@@ -253,7 +253,30 @@ if curl -fsSL -o /tmp/kodbox.zip "${KODBOX_URL}"; then
     unzip -q -o /tmp/kodbox.zip -d /tmp/kodx
     cp -rf "/tmp/kodx/kodbox-${KODBOX_VER}/." "$KODBOX_DST/"
     rm -rf /tmp/kodbox.zip /tmp/kodx
+
+    # ---- 2b. 剔除宿主架构(x86_64) ELF 可执行文件   [added 2026-10-08] ----
+    #   回滚: 删除本小段即可, 或 git revert 本次 commit
+    #   回滚点: main @ 5b49f256690cf4f86d3cefe55ae267e5dd87d78b
+    #
+    #   问题: kodbox 包内 app/sdks/archiveLib/bin/ 含 3 个 x86_64 ELF:
+    #           rar_linux (musl) / rar + 7z (glibc)
+    #         它们被注入 package/base-files/files/ 后, base-files 收尾的依赖
+    #         检查会用宿主机 ldd 解析, 要求固件声明 libc.musl-x86_64.so.1 /
+    #         libc.so.6 / libm.so.6 / libpthread.so.0 / libstdc++.so.6,
+    #         而这些库不属于 aarch64 固件 → 编译必失败:
+    #           "Package base-files is missing dependencies for the following libraries"
+    #   处置: 直接删除该目录 (x86_64 二进制在 aarch64 固件上本就无法运行,
+    #         属于 kodbox 自带的可选 archiver SDK; 需要时用户可自行放 aarch64 版)
+    rm -rf "${KODBOX_DST}/app/sdks/archiveLib/bin"
+    # 双保险: 全树兜底清除任何残留的 x86_64 ELF (幂等)
+    if [ -d "$KODBOX_DST" ]; then
+        find "$KODBOX_DST" -type f -exec sh -c \
+            'head -c4 "$1" 2>/dev/null | grep -q "^.ELF" || exit 0; \
+             od -An -tx1 -j18 -N2 "$1" 2>/dev/null | tr -d " " | grep -qi "^3e00" && rm -f "$1"' _ {} \; 2>/dev/null || true
+    fi
+
     echo "[diy-part2] kodbox injected: $(du -sh "$KODBOX_DST" | cut -f1)"
+    echo "[diy-part2] kodbox x86_64 二进制已剔除 (archiveLib/bin)"
 else
     echo "[diy-part2] WARNING: kodbox 下载失败, 跳过注入 (固件仍可用, 需手动更新)"
 fi
