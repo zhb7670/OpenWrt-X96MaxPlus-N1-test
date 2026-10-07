@@ -528,3 +528,65 @@ for pkg in luci-app-transmission transmission-daemon transmission-web; do
 done
 [ "$TR_OK" = "1" ] && echo "[diy-part2] Transmission 主程序启用校验: OK" || echo "[diy-part2] WARNING: Transmission 启用校验未全部通过, 请查上游 config 结构"
 echo "[diy-part2] === Transmission 修复段完成 ==="
+
+#=====================================================================================
+# 迅雷快鸟 (luci-app-xlnetacc) 启用 + 首启预置   [added 2026-10-07]
+#   来源: feeds/small/luci-app-xlnetacc (kenzok8/small-package, v1.1, 每次 feeds update 拉最新)
+#   依赖: +jshn +curl +openssl-util +luci-compat (均在 config 里 =y, 无问题)
+#
+#   问题(两层):
+#     ① 编译层: 只写了 CONFIG_PACKAGE_luci-app-xlnetacc=y (壳), 但 config:5377
+#        有显式 "# CONFIG_PACKAGE_luci-app-xlnetacc is not set" → 固件里根本没这个包,
+#        界面都看不到。(与 adblock/smartdns/transmission 同款坑)
+#     ② 运行层: init 脚本第24行有"静默退出"逻辑 ——
+#        ( [enabled==0] || [down_acc==0 && up_acc==0] || [账号/密码/网卡任一为空] ) && return 2
+#        => 未填账号/未选网卡/未开开关时, 服务主动拒绝启动(非故障)。
+#
+#   本段做两件事:
+#     ① sed 解除 base config 的显式关闭 (与上方 .config 追加形成双保险)
+#     ② uci-defaults 首启预置: 总开关 enabled=1 + 网卡 wan (缩短手填步骤)
+#        ★ 不预置账号/密码 —— 公开仓写密码不安全, 刷机后由用户在界面填一次。
+#
+#   回滚: 删除本段即可, 或 git revert 本次 commit
+#   回滚点: main @ a57df608203a400866d02ca62f3e0d0f2ed96781
+#=====================================================================================
+echo "[diy-part2] === 迅雷快鸟: 解除显式关闭 + 首启预置 ==="
+# ① 解除 base config 显式关闭
+for pkg in luci-app-xlnetacc; do
+    sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
+done
+grep -q "^CONFIG_PACKAGE_luci-app-xlnetacc=y" .config \
+    && echo "[diy-part2] xlnetacc 包启用校验: OK" \
+    || echo "[diy-part2] WARNING: xlnetacc 未变为 =y, 请查上游 config 结构"
+
+# ② 首启预置 (只写开关和网卡, 不碰账号密码)
+UCD_DIR="package/base-files/files/etc/uci-defaults"
+mkdir -p "$UCD_DIR"
+cat > "${UCD_DIR}/99-xlnetacc-default-enable" <<'UCDEOF'
+#!/bin/sh
+# 迅雷快鸟开箱即用: 首次启动确保总开关开启 + 出口网卡为 wan。
+# 仅在选项缺失时写入, 不覆盖用户已保存的配置。
+# ★ 账号/密码需用户在 LuCI 界面手动填写 (安全考虑, 不预置)。
+[ -x /etc/init.d/xlnetacc ] || exit 0
+[ -f /etc/config/xlnetacc ] || exit 0
+cur="$(uci -q get xlnetacc.general.enabled)"
+if [ -z "$cur" ] || [ "$cur" = "0" ]; then
+    uci -q set xlnetacc.general.enabled='1'
+fi
+net="$(uci -q get xlnetacc.general.network)"
+if [ -z "$net" ]; then
+    uci -q set xlnetacc.general.network='wan'
+fi
+uci -q commit xlnetacc
+exit 0
+UCDEOF
+chmod 755 "${UCD_DIR}/99-xlnetacc-default-enable"
+echo "[diy-part2] xlnetacc uci-defaults 已生成: ${UCD_DIR}/99-xlnetacc-default-enable"
+echo "[diy-part2] === 迅雷快鸟修复段完成 ==="
+
+#=====================================================================================
+# ⚠️ 已知遗留 (未修, 待用户决策): 上游 uci-defaults/luci-xlnetacc 用了 ucitrack
+#   本固件 luci 为混合版, ucitrack 机制可能不存在 → 该上游脚本首行
+#   `delete ucitrack.@xlnetacc[-1]` 可能报错(但 exit 0 兜底, 危害低)。
+#   若实测界面"保存应用"不触发服务动作, 再回来处理此处。
+#=====================================================================================
