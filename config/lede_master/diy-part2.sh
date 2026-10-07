@@ -160,6 +160,18 @@ CONFIG_PACKAGE_luci-app-ssr-mudb-server=y
 CONFIG_PACKAGE_shadowsocksr-libev=y
 CONFIG_PACKAGE_luci-app-n2n=y
 CONFIG_PACKAGE_luci-app-softethervpn=y
+# ⚠️ SoftEther VPN 主程序 (luci-app-softethervpn 只是前端壳, 必须显式选中主程序;
+#    否则 config 里被 base 模板显式 "# ... is not set" 关闭 → 固件无 VPN 服务端二进制,
+#    界面能开但服务起不来)
+#    [added 2026-10-07] 与 adblock/smartdns/transmission/xlnetacc/aria2 同款坑
+#    版本选择: 壳的 LUCI_DEPENDS 依赖 softethervpn-server (v4, 非 v5), 故跟随选 v4;
+#             不选 bridge/client (用户只需服务器), 不选 v5 (会与 v4 两套共存冲突)
+#    libiconv-full: 壳声明的依赖, config 里显式关闭, 必须补(否则编译/运行缺库)
+#    回滚: 删掉下面几行即可, 或 git revert 本次 commit
+#    回滚点: main @ ad09aec8e1d14902679eae0fb08d9144f9af3075
+CONFIG_PACKAGE_softethervpn-server=y
+CONFIG_PACKAGE_softethervpn-base=y
+CONFIG_PACKAGE_libiconv-full=y
 CONFIG_PACKAGE_luci-app-ipsec-server=y
 CONFIG_PACKAGE_luci-app-pptp-server=y
 CONFIG_PACKAGE_luci-app-openvpn-server=y
@@ -625,3 +637,31 @@ for pkg in luci-app-aria2 aria2; do
 done
 [ "$AR_OK" = "1" ] && echo "[diy-part2] Aria2 主程序启用校验: OK" || echo "[diy-part2] WARNING: Aria2 启用校验未通过, 请查上游 config 结构"
 echo "[diy-part2] === Aria2 修复段完成 ==="
+
+#=====================================================================================
+# SoftEther VPN 启用修复 (双保险)   [added 2026-10-07]
+#   问题: 只写了 CONFIG_PACKAGE_luci-app-softethervpn=y (壳), 主程序
+#         softethervpn-server / softethervpn-base / libiconv-full 在 base config
+#         里被显式 "# ... is not set" 关闭 → 固件无 VPN 服务端二进制, 界面能开服务起不来。
+#         (与 adblock/smartdns/transmission/xlnetacc/aria2 同款坑)
+#
+#   版本选择: 壳 LUCI_DEPENDS 指向 softethervpn-server(v4), 跟随选 v4;
+#             不选 bridge/client, 不选 v5(避免与 v4 两套共存冲突)。
+#
+#   本段: 解除 base config 中相关显式关闭 (sed 就地改写, 幂等)。
+#         与本脚本上方 .config 追加段形成双保险。
+#
+#   回滚: 删除本段 + 上方 softethervpn 三行即可, 或 git revert 本次 commit
+#   回滚点: main @ ad09aec8e1d14902679eae0fb08d9144f9af3075
+#=====================================================================================
+echo "[diy-part2] === SoftEther VPN: 解除 base config 显式关闭 ==="
+for pkg in luci-app-softethervpn softethervpn-server softethervpn-base libiconv-full; do
+    sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
+done
+# 校验
+SE_OK=1
+for pkg in luci-app-softethervpn softethervpn-server softethervpn-base libiconv-full; do
+    grep -q "^CONFIG_PACKAGE_${pkg}=y" .config || { echo "[diy-part2] WARNING: ${pkg} 未变为 =y"; SE_OK=0; }
+done
+[ "$SE_OK" = "1" ] && echo "[diy-part2] SoftEther VPN 主程序启用校验: OK" || echo "[diy-part2] WARNING: SoftEther 启用校验未通过, 请查上游 config 结构"
+echo "[diy-part2] === SoftEther VPN 修复段完成 ==="
