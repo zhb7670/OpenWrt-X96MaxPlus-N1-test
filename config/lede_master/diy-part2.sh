@@ -317,3 +317,67 @@ else
     echo "[diy-part2] WARNING: $UM_LUA not found, skip patch"
 fi
 echo "[diy-part2] === 解锁网易云修复段完成 ==="
+
+#=====================================================================================
+# pushbot (luci-app-pushbot) 修复与校验   [added 2026-10-07]
+#   上游: feeds/small/luci-app-pushbot  (kenzok8/small-package, 每次 feeds update 拉最新)
+#   版本: v6.01-r13 (2026-09-27 发布, 上游活跃维护)
+#
+#   背景(已在 X96Max+ 实测):
+#     - 旧固件的 pushbot 症状: 「服务起不来 / 启动后自动关闭」。
+#     - 实测确认根因之一: 主程序 enable_detection() 在读取到
+#       pushbot_enable=0 时会主动调用 /etc/init.d/pushbot stop 自杀
+#       (上游 v6.01 起为「总开关关闭则清理服务」的有意设计)。
+#       => 只要总开关保持 1 即可正常运行(用户已在路由器实测通过)。
+#     - 本段做两件事, 保证「开箱即用」:
+#       ① init 脚本防御补丁: 上游 `kill -9 `pgrep ...`` 在「当前无 pushbot 进程」
+#          时,命令替换为空 -> 退化成无参 `kill -9`, 在部分 busybox 上会刷
+#          "kill: not enough arguments" 干扰日志。改为先取 PID 判空再杀,
+#          逻辑等价且静默安全。
+#       ② 编译期校验: 打印实际版本号 + 关键行, 便于在 Actions 日志一眼确认
+#          拉到的确实是新版、反引号等特殊字符完好。
+#
+#   回滚: 删除本段即可, 或 git revert 本次 commit
+#   回滚点: main @ 7f187daf95e382949449b818fe3ccc63b9383735
+#=====================================================================================
+PB_DIR="feeds/small/luci-app-pushbot"
+PB_INIT="${PB_DIR}/root/etc/init.d/pushbot"
+PB_MAIN="${PB_DIR}/root/usr/bin/pushbot/pushbot"
+echo "[diy-part2] === pushbot: 校验版本 + init 防御补丁 ==="
+if [ -f "$PB_INIT" ] && [ -f "$PB_MAIN" ]; then
+    # ---- 版本打印 (编译日志可见) ----
+    PB_VER="$(grep -m1 '^PKG_VERSION:=' "${PB_DIR}/Makefile" 2>/dev/null | cut -d= -f2)"
+    PB_REL="$(grep -m1 '^PKG_RELEASE:=' "${PB_DIR}/Makefile" 2>/dev/null | cut -d= -f2)"
+    echo "[diy-part2] pushbot 版本: ${PB_VER}-r${PB_REL} (期望 >= 6.01-r13)"
+
+    # ---- ① init 防御补丁 ----
+    #  目标行(上游): \tkill -9 `pgrep -f "/usr/bin/pushbot/pushbot"` 2>/dev/null
+    #  替换为:       \tPB_PIDS=$(pgrep -f "/usr/bin/pushbot/pushbot"); [ -n "$PB_PIDS" ] && kill -9 $PB_PIDS 2>/dev/null
+    #  用 sed 的 ` 匹配反引号需转义, 这里改用「整行按锚点重写」策略:
+    #  以 'kill -9' 开头且含 pgrep 的行使之变为带判空的写法。
+    cp -f "$PB_INIT" "${PB_INIT}.orig"
+    awk '
+        /kill -9 .*pgrep/ && !/PB_PIDS/ {
+            match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH)
+            print ind "PB_PIDS=$(pgrep -f \"/usr/bin/pushbot/pushbot\")"
+            print ind "[ -n \"$PB_PIDS\" ] && kill -9 $PB_PIDS 2>/dev/null"
+            next
+        }
+        { print }
+    ' "${PB_INIT}.orig" > "$PB_INIT"
+    chmod 755 "$PB_INIT"
+    if grep -q 'PB_PIDS=' "$PB_INIT"; then
+        echo "[diy-part2] pushbot init 防御补丁 OK"
+    else
+        echo "[diy-part2] WARNING: pushbot init 补丁未命中, 上游脚本结构可能已变"
+    fi
+
+    # ---- ② 关键行校验 (只读) ----
+    echo "[diy-part2] pushbot init stop() 片段:"
+    grep -n 'PB_PIDS\|pushbot exit' "$PB_INIT" | head -5
+    echo "[diy-part2] pushbot 主程序总开关自杀逻辑 (应含反引号调用 stop):"
+    grep -n 'init.d/pushbot stop' "$PB_MAIN" | head -3
+else
+    echo "[diy-part2] WARNING: $PB_DIR 未找到 (feeds 可能未拉取成功), 跳过 pushbot 段"
+fi
+echo "[diy-part2] === pushbot 修复段完成 ==="
