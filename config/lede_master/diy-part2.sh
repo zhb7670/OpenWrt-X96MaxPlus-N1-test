@@ -287,6 +287,38 @@ fi
 echo "[diy-part2] === Alist 修复段完成 ==="
 
 #=====================================================================================
+# 解锁网易云 (luci-app-unblockmusic) 保存应用不生效修复   [added 2026-10-07]
+#   问题: LuCI 页面勾选/取消"启用"并点"保存并应用"后, 服务不会自动启停;
+#         只能手动 /etc/init.d/unblockmusic start|stop, 体验极差。
+#   根因: 上游 unblockmusic.lua 未设 apply_on_parse, 且无 on_after_commit 钩子;
+#         而 luci cbi.lua 的钩子执行分支(第402-405行)依赖 apply_on_parse 判定,
+#         导致保存配置后不触发任何服务动作。
+#   本段: 在 lua 文件 return mp 之前注入 apply_on_parse=false + on_after_commit,
+#         使"保存并应用"按钮自动 restart unblockmusic。
+#         (X96Max+ 实测: 取消勾选保存→进程停; 勾选保存→进程自动起)
+#   回滚: 删除本段即可, 或 git revert 本次 commit
+#   回滚点: main @ 7f187daf95e382949449b818fe3ccc63b9383735
+#=====================================================================================
+UM_LUA="feeds/small/luci-app-unblockmusic/luasrc/model/cbi/unblockmusic/unblockmusic.lua"
+echo "[diy-part2] === 解锁网易云: 注入 apply 钩子 ==="
+if [ -f "$UM_LUA" ]; then
+    cp -f "$UM_LUA" "${UM_LUA}.orig"
+    if grep -q "on_after_commit" "$UM_LUA"; then
+        echo "[diy-part2] unblockmusic 已有钩子, 跳过"
+    else
+        sed -i 's#^return mp$#mp.apply_on_parse = false\nfunction mp.on_after_commit(self)\n    luci.sys.call("\/etc\/init.d\/unblockmusic restart >\/dev\/null 2>\&1")\nend\n\nreturn mp#' "$UM_LUA"
+        if grep -q "on_after_commit" "$UM_LUA"; then
+            echo "[diy-part2] unblockmusic 钩子注入 OK"
+        else
+            echo "[diy-part2] WARNING: unblockmusic 钩子注入失败 (return mp 未命中?)"
+        fi
+    fi
+else
+    echo "[diy-part2] WARNING: $UM_LUA not found, skip patch"
+fi
+echo "[diy-part2] === 解锁网易云修复段完成 ==="
+
+#=====================================================================================
 # pushbot (luci-app-pushbot) 修复与校验   [added 2026-10-07]
 #   上游: feeds/small/luci-app-pushbot  (kenzok8/small-package, 每次 feeds update 拉最新)
 #   版本: v6.01-r13 (2026-09-27 发布, 上游活跃维护)
