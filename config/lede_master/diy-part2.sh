@@ -168,3 +168,60 @@ if [ -d "${REPO_ROOT}/files" ]; then
 else
     echo "[diy-part2] WARNING: ${REPO_ROOT}/files not found, skip injection"
 fi
+
+#=====================================================================================
+# 可道云 (kodbox) 修复 —— 三件套   [added 2026-10-07]
+#   问题: ①luci-app-kodexplorer(feeds/small) 仅外壳; config/.config 里其运行时依赖
+#            (php8 / nginx-ssl) 被显式 "# ... is not set" 关闭, 编译出的固件缺运行环境
+#         ②本体不在任何 feed, 靠 LuCI "手动更新" 按钮运行时下载
+#         ③该按钮走 api.kodcloud.com/?app/version 取下载地址, 该 API 已失效 → 报"不存在"
+#   本段: ①解除依赖的显式关闭  ②编译时注入 kodbox 本体到固件 /opt/kodexplorer
+#         ③补丁 api.lua 的 to_check() 指向 GitHub 可用下载源 (恢复"手动更新"能力)
+#
+#   ★ 回滚方法 (任选其一):
+#      a) 删除本注释块到文件末尾的全部内容 (即本段)
+#      b) git revert <本次 commit sha>
+#      c) git checkout ad643162ff22095799c62be06a7ffbc8edd647ae -- config/lede_master/diy-part2.sh
+#   回滚点: main @ ad643162ff22095799c62be06a7ffbc8edd647ae
+#          "docs: README 新增 FileBrowser/Alist 说明 + 修正章节编号"
+#=====================================================================================
+
+# ---- 1. 解除运行时依赖的显式关闭 (否则 luci-app-kodexplorer 的 select 不生效) ----
+echo "[diy-part2] === 可道云: 解除依赖关闭 ==="
+for pkg in php8 php8-fpm php8-fastcgi \
+           php8-mod-curl php8-mod-dom php8-mod-gd php8-mod-iconv \
+           php8-mod-mbstring php8-mod-opcache php8-mod-pdo \
+           php8-mod-pdo-mysql php8-mod-pdo-sqlite php8-mod-session \
+           php8-mod-sqlite3 php8-mod-xml php8-mod-xmlreader \
+           php8-mod-xmlwriter php8-mod-zip \
+           nginx-ssl unzip zoneinfo-asia; do
+    sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
+done
+
+# ---- 2. 编译时下载 kodbox 本体并注入固件 /opt/kodexplorer (出厂即用, 重刷不丢) ----
+KODBOX_VER="1.69.03"
+KODBOX_URL="https://github.com/kalcaddle/kodbox/archive/refs/tags/${KODBOX_VER}.zip"
+KODBOX_DST="package/base-files/files/opt/kodexplorer"
+echo "[diy-part2] === 可道云: 注入 kodbox ${KODBOX_VER} ==="
+if curl -fsSL -o /tmp/kodbox.zip "${KODBOX_URL}"; then
+    rm -rf /tmp/kodx && mkdir -p /tmp/kodx "$KODBOX_DST"
+    unzip -q -o /tmp/kodbox.zip -d /tmp/kodx
+    cp -rf "/tmp/kodx/kodbox-${KODBOX_VER}/." "$KODBOX_DST/"
+    rm -rf /tmp/kodbox.zip /tmp/kodx
+    echo "[diy-part2] kodbox injected: $(du -sh "$KODBOX_DST" | cut -f1)"
+else
+    echo "[diy-part2] WARNING: kodbox 下载失败, 跳过注入 (固件仍可用, 需手动更新)"
+fi
+
+# ---- 3. 补丁 api.lua: to_check() 直接返回 GitHub 下载地址, 修复"手动更新"按钮 ----
+KOD_API="feeds/small/luci-app-kodexplorer/luasrc/model/cbi/kodexplorer/api.lua"
+if [ -f "$KOD_API" ]; then
+    cp -f "$KOD_API" "${KOD_API}.orig"
+    sed -i "s#^function to_check()#function to_check()\n    return { code = 0, data = { server = { version = \"${KODBOX_VER}\", link = \"${KODBOX_URL}\" } } }#" "$KOD_API"
+    grep -q "${KODBOX_URL}" "$KOD_API" \
+        && echo "[diy-part2] api.lua patched OK" \
+        || echo "[diy-part2] WARNING: api.lua patch failed (函数签名可能已变)"
+else
+    echo "[diy-part2] WARNING: $KOD_API not found, skip patch"
+fi
+echo "[diy-part2] === 可道云修复段完成 ==="
