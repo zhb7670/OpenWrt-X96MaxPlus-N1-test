@@ -257,6 +257,28 @@ done
 KODBOX_VER="1.69.03"
 KODBOX_URL="https://github.com/kalcaddle/kodbox/archive/refs/tags/${KODBOX_VER}.zip"
 KODBOX_DST="package/base-files/files/opt/kodexplorer"
+# ---- 2a. 预检: 更新 URL 必须有效 (HTTP 200)   [added 2026-10-08] ----
+#   背景: 原实现只写 "if curl ...; then ... else echo WARNING 跳过注入"。
+#         URL 一旦失效(上游删 tag/改名), 编译照样"成功", 但固件里根本没有
+#         可道云, 且 UI 的"手动更新"会指向一个 404 —— 排查成本极高。
+#   本段: 先拉最新 release tag, 再验证 zip URL 可达; 明确打印结果。
+#   (不因失败而中断编译, 但会打出醒目的 ERROR 行)
+KODBOX_LATEST="$(curl -fsSL --connect-timeout 15 --max-time 30 \
+    https://api.github.com/repos/kalcaddle/kodbox/releases/latest 2>/dev/null \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+if [ -n "${KODBOX_LATEST}" ]; then
+    echo "[diy-part2] kodbox 上游最新 release: ${KODBOX_LATEST} (内置版本 ${KODBOX_VER})"
+else
+    echo "[diy-part2] WARNING: 无法从 GitHub API 获取 kodbox 最新版本, 沿用内置 ${KODBOX_VER}"
+fi
+KODBOX_HTTP="$(curl -sIL -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 40 \
+    "${KODBOX_URL}" 2>/dev/null)"
+if [ "${KODBOX_HTTP}" = "200" ]; then
+    echo "[diy-part2] kodbox 下载链接校验通过: HTTP ${KODBOX_HTTP}"
+else
+    echo "[diy-part2] ERROR: kodbox 下载链接无效! HTTP='${KODBOX_HTTP}'  URL=${KODBOX_URL}"
+    echo "[diy-part2] ERROR: 固件将不含可道云本体, UI 更新按钮也会指向失效地址"
+fi
 echo "[diy-part2] === 可道云: 注入 kodbox ${KODBOX_VER} ==="
 if curl -fsSL -o /tmp/kodbox.zip "${KODBOX_URL}"; then
     rm -rf /tmp/kodx && mkdir -p /tmp/kodx "$KODBOX_DST"
@@ -283,6 +305,44 @@ if curl -fsSL -o /tmp/kodbox.zip "${KODBOX_URL}"; then
         find "$KODBOX_DST" -type f -exec sh -c \
             'head -c4 "$1" 2>/dev/null | grep -q "^.ELF" || exit 0; \
              od -An -tx1 -j18 -N2 "$1" 2>/dev/null | tr -d " " | grep -qi "^3e00" && rm -f "$1"' _ {} \; 2>/dev/null || true
+    fi
+
+    # ---- 2c. 修 PHP 8.3 兼容: stream_wrapper_register 类名守卫  [added 2026-10-08] ----
+    #   问题: kodbox 1.69.03 的 app/autoload.php 第 263 行写死
+    #           stream_wrapper_register('kodio','StreamWrapperIO');
+    #         而 StreamWrapperIO 由 kodbox 自身自动加载器在运行时构造, 官方包内
+    #         【没有它的类定义】(class StreamWrapperIO 全树 0 命中)。
+    #         PHP 8.1 仅 warning; PHP 8.3 直接抛 TypeError:
+    #           "stream_wrapper_register(): Argument #2 ($class) must be a
+    #            valid class name, StreamWrapperIO given"
+    #         这是 bootstrap 阶段的致命错误 → kodbox 首页打不开、
+    #         "手动更新"按钮点不通, 整个可道云不可用。
+    #   实证: 本固件 PHP 8.3.14。干净安装官方 kodbox 1.69.03 + 本守卫
+    #         → 首页 HTTP 200, 正常进入安装向导。
+    #   注意: `@` 抑制符【挡不住】 TypeError (PHP8 的 @ 不抑制异常), 必须用
+    #         class_exists 真守卫 —— 已实测确认。
+    #   回滚: 删除本小段即可, 或 git revert 本次 commit
+    KOD_AUTOLOAD="${KODBOX_DST}/app/autoload.php"
+    if [ -f "${KOD_AUTOLOAD}" ]; then
+        python3 - "${KOD_AUTOLOAD}" <<'PYEOF'
+import io, sys
+p = sys.argv[1]
+s = io.open(p, 'r', encoding='utf-8', errors='surrogateescape').read()
+old = "stream_wrapper_register('kodio','StreamWrapperIO');"
+new = ("if (class_exists('StreamWrapperIO', false)) {\n"
+       "\tstream_wrapper_register('kodio','StreamWrapperIO');\n"
+       "}")
+if old in s:
+    io.open(p, 'w', encoding='utf-8', errors='surrogateescape').write(
+        s.replace(old, new, 1))
+    print("[diy-part2]   autoload.php: PHP8.3 stream_wrapper 守卫已注入")
+elif "class_exists('StreamWrapperIO'" in s:
+    print("[diy-part2]   autoload.php: 守卫已存在, 跳过")
+else:
+    print("[diy-part2]   WARNING: autoload.php 未找到 stream_wrapper_register 锚点")
+PYEOF
+    else
+        echo "[diy-part2] WARNING: ${KOD_AUTOLOAD} 不存在, 跳过 PHP8.3 守卫"
     fi
 
     echo "[diy-part2] kodbox injected: $(du -sh "$KODBOX_DST" | cut -f1)"
