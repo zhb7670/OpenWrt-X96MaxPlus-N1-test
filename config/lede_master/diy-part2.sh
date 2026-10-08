@@ -128,11 +128,17 @@ CONFIG_PACKAGE_luci-app-transmission=y
 # ⚠️ Transmission 主程序 (luci-app-transmission 只是前端壳, 必须显式选中主程序;
 #    否则 config 里被 base 模板显式 "# ... is not set" 关闭 → 固件残留空壳, 服务跑不起来)
 #    [added 2026-10-07] 与 adblock/smartdns 同款坑: 壳有、主程序被 config 显式关闭
-#    目标: 能用(daemon) + 能开能关(web 界面) 即可, 不选 cli/remote/web-control
-#    回滚: 删掉下面两行即可, 或 git revert 本次 commit
-#    回滚点: main @ daf015c7e0315dcc0b532f515630adae0266a80c
+#    目标: 能用(daemon) + 能开能关(web 界面) 即可
+#    [fixed 2026-10-08] 移除 transmission-web: 壳 luci-app-transmission 的依赖是
+#         +transmission-web-control, 与 transmission-web 互斥冲突:
+#           check_conflicts_for: The following packages conflict with
+#             transmission-web-control: transmission-web *
+#           opkg_install_cmd: Cannot install package luci-app-transmission.
+#         跟随壳的真实依赖只留 transmission-web-control。
+#    回滚: 恢复 CONFIG_PACKAGE_transmission-web=y 一行即可, 或 git revert 本次 commit
+#    回滚点: main @ e30c674ab1b6
 CONFIG_PACKAGE_transmission-daemon=y
-CONFIG_PACKAGE_transmission-web=y
+CONFIG_PACKAGE_transmission-web-control=y
 CONFIG_PACKAGE_luci-app-mjpg-streamer=y
 CONFIG_PACKAGE_luci-app-rclone=y
 CONFIG_PACKAGE_luci-app-aria2=y
@@ -159,18 +165,22 @@ CONFIG_PACKAGE_luci-app-music-remote-center=y
 CONFIG_PACKAGE_luci-app-ssr-mudb-server=y
 CONFIG_PACKAGE_shadowsocksr-libev=y
 CONFIG_PACKAGE_luci-app-n2n=y
-CONFIG_PACKAGE_luci-app-softethervpn=y
-# ⚠️ SoftEther VPN 主程序 (luci-app-softethervpn 只是前端壳, 必须显式选中主程序;
-#    否则 config 里被 base 模板显式 "# ... is not set" 关闭 → 固件无 VPN 服务端二进制,
-#    界面能开但服务起不来)
-#    [added 2026-10-07] 与 adblock/smartdns/transmission/xlnetacc/aria2 同款坑
-#    版本选择: 壳的 LUCI_DEPENDS 依赖 softethervpn-server (v4, 非 v5), 故跟随选 v4;
-#             不选 bridge/client (用户只需服务器), 不选 v5 (会与 v4 两套共存冲突)
-#    libiconv-full: 壳声明的依赖, config 里显式关闭, 必须补(否则编译/运行缺库)
-#    回滚: 删掉下面几行即可, 或 git revert 本次 commit
-#    回滚点: main @ ad09aec8e1d14902679eae0fb08d9144f9af3075
-CONFIG_PACKAGE_softethervpn-server=y
-CONFIG_PACKAGE_softethervpn-base=y
+# ⚠️ SoftEther VPN 已移除   [removed 2026-10-08]
+#   原因: luci-app-softethervpn 壳依赖 softethervpn-server(v4), 而 v4 的
+#         softethervpn-base 与 v5 的 softethervpn5-libs 都往
+#         usr/libexec/softethervpn/ 装同名文件 (vpncmd / hamcore.se2 /
+#         launcher.sh) → 两套抢同一文件, 编译报错:
+#           check_data_file_clashes: softethervpn-base wants /usr/bin/vpncmd
+#           But that file is already provided by softethervpn5-libs
+#           opkg_install_cmd: Cannot install package softethervpn-server.
+#   处置: 整个 SoftEther 段删除 (壳 + v4 主程序), 不再编译该组件。
+#   影响: 固件不再含 SoftEther VPN 服务端; 其余 VPN 组件
+#         (ssr-mudb-server / n2n / ipsec / pptp / openvpn) 均保留不受影响。
+#   回滚: 恢复下方被注释的三行即可, 或 git revert 本次 commit
+#   回滚点: main @ e30c674ab1b6
+# CONFIG_PACKAGE_luci-app-softethervpn=y
+# CONFIG_PACKAGE_softethervpn-server=y
+# CONFIG_PACKAGE_softethervpn-base=y
 CONFIG_PACKAGE_libiconv-full=y
 CONFIG_PACKAGE_luci-app-ipsec-server=y
 CONFIG_PACKAGE_luci-app-pptp-server=y
@@ -545,28 +555,36 @@ done
 echo "[diy-part2] === SmartDNS 修复段完成 ==="
 
 #=====================================================================================
-# Transmission 启用修复 (双保险)   [added 2026-10-07]
+# Transmission 启用修复 (双保险)   [added 2026-10-07] [fixed 2026-10-08]
 #   问题: 只写了 CONFIG_PACKAGE_luci-app-transmission=y (壳), 主程序
-#         transmission-daemon / transmission-web 在 base config 里被显式
+#         transmission-daemon 在 base config 里被显式
 #         "# ... is not set" 关闭 → 固件残留空壳, 服务起不来。
 #         (与 adblock/smartdns/kodexplorer 同款坑)
 #
 #   本段: 解除 base config 中几条显式关闭 (sed 就地改写, 幂等)。
 #         与本脚本上方 .config 追加段形成双保险:
-#           ① 上方 cat >> .config 追加 CONFIG_PACKAGE_transmission-daemon=y / -web=y
+#           ① 上方 cat >> .config 追加 CONFIG_PACKAGE_transmission-daemon=y
+#                                          CONFIG_PACKAGE_transmission-web-control=y
 #           ② 本段 sed 掉 config 模板里的 is not set
 #         二者叠加, 无论 config 归一化顺序如何都能生效。
 #
+#   [fixed 2026-10-08] 把关掉 transmission-web 也纳入 sed 目标:
+#         壳 luci-app-transmission 依赖 +transmission-web-control, 与
+#         transmission-web 互斥。原 sed 列表含 transmission-web, 会把冲突包
+#         又激活回去 → 必须移除, 改用 transmission-web-control。
+#
 #   回滚: 删除本段 + 上方 transmission 两行即可, 或 git revert 本次 commit
-#   回滚点: main @ daf015c7e0315dcc0b532f515630adae0266a80c
+#   回滚点: main @ e30c674ab1b6
 #=====================================================================================
 echo "[diy-part2] === Transmission: 解除 base config 显式关闭 ==="
-for pkg in luci-app-transmission transmission-daemon transmission-web; do
+for pkg in luci-app-transmission transmission-daemon transmission-web-control; do
     sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
 done
+# 显式确保互斥包 transmission-web 保持关闭 (防 base 模板残留或依赖漂移重新激活)
+sed -i "s/^CONFIG_PACKAGE_transmission-web=y$/# CONFIG_PACKAGE_transmission-web is not set/" .config
 # 校验: 3 项应全部为 =y
 TR_OK=1
-for pkg in luci-app-transmission transmission-daemon transmission-web; do
+for pkg in luci-app-transmission transmission-daemon transmission-web-control; do
     grep -q "^CONFIG_PACKAGE_${pkg}=y" .config || { echo "[diy-part2] WARNING: ${pkg} 未变为 =y"; TR_OK=0; }
 done
 [ "$TR_OK" = "1" ] && echo "[diy-part2] Transmission 主程序启用校验: OK" || echo "[diy-part2] WARNING: Transmission 启用校验未全部通过, 请查上游 config 结构"
@@ -662,29 +680,19 @@ done
 echo "[diy-part2] === Aria2 修复段完成 ==="
 
 #=====================================================================================
-# SoftEther VPN 启用修复 (双保险)   [added 2026-10-07]
-#   问题: 只写了 CONFIG_PACKAGE_luci-app-softethervpn=y (壳), 主程序
-#         softethervpn-server / softethervpn-base / libiconv-full 在 base config
-#         里被显式 "# ... is not set" 关闭 → 固件无 VPN 服务端二进制, 界面能开服务起不来。
-#         (与 adblock/smartdns/transmission/xlnetacc/aria2 同款坑)
+# SoftEther VPN 段已整体移除   [removed 2026-10-08]
+#   原先此处有"双保险"段: 用 sed 解除 base config 里 softethervpn-base /
+#   softethervpn-server / luci-app-softethervpn 的显式关闭, 强行使 v4 三件套 =y。
+#   该做法正是编译失败的元凶: v4 的 softethervpn-base 与 v5 的 softethervpn5-libs
+#   争抢 usr/libexec/softethervpn/ 下同名文件 (vpncmd / hamcore.se2 / launcher.sh),
+#   导致 package/install 阶段报:
+#     check_data_file_clashes: softethervpn-base wants /usr/bin/vpncmd
+#     But that file is already provided by softethervpn5-libs
+#     opkg_install_cmd: Cannot install package softethervpn-server.
 #
-#   版本选择: 壳 LUCI_DEPENDS 指向 softethervpn-server(v4), 跟随选 v4;
-#             不选 bridge/client, 不选 v5(避免与 v4 两套共存冲突)。
-#
-#   本段: 解除 base config 中相关显式关闭 (sed 就地改写, 幂等)。
-#         与本脚本上方 .config 追加段形成双保险。
-#
-#   回滚: 删除本段 + 上方 softethervpn 三行即可, 或 git revert 本次 commit
-#   回滚点: main @ ad09aec8e1d14902679eae0fb08d9144f9af3075
+#   处置: 本段删除, 且上方 .config 追加段里的 softethervpn 三行也已注释,
+#         上下两处都不再启用 SoftEther → 彻底不编该组件, 冲突消失。
+#   影响: 固件不含 SoftEther VPN; 其余 VPN 组件保持不变。
+#   回滚: 恢复本段并取消上方三行注释即可, 或 git revert 本次 commit
+#   回滚点: main @ e30c674ab1b6
 #=====================================================================================
-echo "[diy-part2] === SoftEther VPN: 解除 base config 显式关闭 ==="
-for pkg in luci-app-softethervpn softethervpn-server softethervpn-base libiconv-full; do
-    sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set$/CONFIG_PACKAGE_${pkg}=y/" .config
-done
-# 校验
-SE_OK=1
-for pkg in luci-app-softethervpn softethervpn-server softethervpn-base libiconv-full; do
-    grep -q "^CONFIG_PACKAGE_${pkg}=y" .config || { echo "[diy-part2] WARNING: ${pkg} 未变为 =y"; SE_OK=0; }
-done
-[ "$SE_OK" = "1" ] && echo "[diy-part2] SoftEther VPN 主程序启用校验: OK" || echo "[diy-part2] WARNING: SoftEther 启用校验未通过, 请查上游 config 结构"
-echo "[diy-part2] === SoftEther VPN 修复段完成 ==="
