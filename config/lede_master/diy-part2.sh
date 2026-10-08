@@ -108,6 +108,13 @@ CONFIG_PACKAGE_luci-app-airplay2=y
 CONFIG_PACKAGE_luci-app-npc=y
 CONFIG_PACKAGE_luci-app-gost=y
 CONFIG_PACKAGE_luci-app-udp2raw=y
+# udp2raw 主程序：上游 luci-app-udp2raw 把依赖声明注释掉了
+#   (kenzok8/small-package/luci-app-udp2raw/Makefile 里
+#    "#	DEPENDS:=+udp2raw-tunnel" 是注释状态)
+#   导致只编出界面、/usr/bin/udp2raw 永远不存在，
+#   init 脚本里 procd_set_param command /usr/bin/udp2raw 必定失败。
+#   主程序包名为 udp2raw（PROVIDES:=udp2raw-tunnel），在 small feed。
+CONFIG_PACKAGE_udp2raw=y
 CONFIG_PACKAGE_luci-app-tinyproxy=y
 CONFIG_PACKAGE_hysteria=y
 CONFIG_PACKAGE_haproxy=y
@@ -1675,3 +1682,54 @@ else
     echo "[diy-part2] WARNING: ${REPO_ROOT}/files/etc/uci-defaults 不存在, 跳过"
 fi
 echo "[diy-part2] === PushBot/清理段完成 ==="
+
+#=====================================================================================
+# 迅雷快鸟 (xlnetacc) 首启预置加速方向   [added 2026-10-08]
+#
+# 实测: 设备上 xlnetacc.general.enabled=1 但进程为空, 原因是 init 脚本第 23 行:
+#   ( [ $enabled -eq 0 ] || [ $down_acc -eq 0 -a $up_acc -eq 0 ] \
+#     || [ -z "$username" -o -z "$password" -o -z "$network" ] ) && return 2
+# down_acc / up_acc 两项都未设置 (config_get_bool 默认 0)
+#   => [ 0 -eq 0 -a 0 -eq 0 ] 为真 => return 2 拒绝启动。
+#
+# 该插件无任何开机自启联动, 且报错只体现在退出码上 —— LuCI 里看不出原因。
+#
+# 预置: 只补 down_acc=1 (下载加速是最常用方向, 上行一般用不到)。
+#   account / password 属用户私有凭据, 【不预置】, 必须由用户在 LuCI 里自行填写。
+#   network 若为空则补 'wan'。
+#
+# 实测依据: 该脚本 /usr/bin/xlnetacc.sh 依赖 uci 的 account/password 做鉴权
+#   (脚本内 json_add_string passWord "$password"), 无凭据无法工作。
+#
+# 回滚: 删除本段 + files/etc/uci-defaults/99-xlnetacc-direction
+#=====================================================================================
+echo "[diy-part2] === 迅雷快鸟 首启预置加速方向 ==="
+XLFIX="${REPO_ROOT}/files/etc/uci-defaults/99-xlnetacc-direction"
+if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
+    cat > "${XLFIX}" <<'XLFIX_EOF'
+#!/bin/sh
+# xlnetacc 首启预置: 只补加速方向与接口, 不碰用户凭据  (幂等)
+if [ -f /etc/config/xlnetacc ] || uci -q show xlnetacc >/dev/null 2>&1; then
+    uci -q get xlnetacc.general >/dev/null 2>&1 || uci -q add xlnetacc general
+
+    # 加速方向: 两项都空时才补 down_acc=1
+    d=$(uci -q get xlnetacc.general.down_acc)
+    u=$(uci -q get xlnetacc.general.up_acc)
+    if [ -z "$d" ] && [ -z "$u" ]; then
+        uci -q set xlnetacc.general.down_acc='1'
+        logger -t xlnetacc-init "preset down_acc=1 (下行加速)"
+    fi
+
+    # 网络接口
+    [ -z "$(uci -q get xlnetacc.general.network)" ] && uci -q set xlnetacc.general.network='wan'
+
+    uci -q commit xlnetacc
+fi
+exit 0
+XLFIX_EOF
+    chmod 0755 "${XLFIX}"
+    echo "[diy-part2] 99-xlnetacc-direction 已生成"
+else
+    echo "[diy-part2] WARNING: uci-defaults 目录不存在, 跳过"
+fi
+echo "[diy-part2] === 迅雷快鸟 段完成 ==="
