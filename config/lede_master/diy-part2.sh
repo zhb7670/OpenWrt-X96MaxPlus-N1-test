@@ -292,13 +292,80 @@ else
 fi
 
 # ---- 3. 补丁 api.lua: to_check() 直接返回 GitHub 下载地址, 修复"手动更新"按钮 ----
+#   [fixed 2026-10-08] 原实现用单行 sed 只在 "function to_check()" 后插入一行
+#       return {...}, 把函数体顶掉 → 插入行的嵌套花括号让 Lua 解析器找不到
+#       函数的 end, 报:
+#         api.lua:115: 'end' expected (to close 'function' at line 113) near 'local'
+#       → api.lua 加载失败 → LuCI 菜单树 menu_json 崩溃 → 整个网页全打不开。
+#   新实现: ① 用 awk 删除整个 to_check() 函数块 (含其后第一个独立 end)
+#           ② 在 to_download 前插入合法单行 to_check()
+#           ③ luac -p 语法校验; 失败自动回滚 .orig, 绝不把坏文件编进固件
+#           ④ 无 luac 时退化为结构校验
+#   回滚: 删除本段即可, 或 git revert 本次 commit
+#   回滚点: main @ acdacbd871dc
 KOD_API="feeds/small/luci-app-kodexplorer/luasrc/model/cbi/kodexplorer/api.lua"
 if [ -f "$KOD_API" ]; then
     cp -f "$KOD_API" "${KOD_API}.orig"
-    sed -i "s#^function to_check()#function to_check()\n    return { code = 0, data = { server = { version = \"${KODBOX_VER}\", link = \"${KODBOX_URL}\" } } }#" "$KOD_API"
-    grep -q "${KODBOX_URL}" "$KOD_API" \
-        && echo "[diy-part2] api.lua patched OK" \
-        || echo "[diy-part2] WARNING: api.lua patch failed (函数签名可能已变)"
+    KOD_NEWFN="$(mktemp)"
+    cat > "$KOD_NEWFN" <<LUAEOF
+function to_check()
+    return { code = 0, data = { server = { version = "${KODBOX_VER}", link = "${KODBOX_URL}" } } }
+end
+LUAEOF
+    # ① 删除旧 to_check() 函数块
+    awk '
+      skip == 1 { if ($0 ~ /^end[ \t]*$/) skip = 0; next }
+      /^function[ \t]+to_check[ \t]*\([ \t]*\)/ { skip = 1; next }
+      { print }
+    ' "$KOD_API" > "${KOD_API}.step1"
+    # ② 在 to_download 之前插入新 to_check()
+    if grep -q '^function[ \t]*to_download' "${KOD_API}.step1"; then
+        awk -v fn="$KOD_NEWFN" '
+          ins == 0 && /^function[ \t]+to_download[ \t]*\(/ {
+            while ((getline l < fn) > 0) print l
+            close(fn); print ""; ins = 1
+          }
+          { print }
+        ' "${KOD_API}.step1" > "${KOD_API}.new"
+    else
+        # 找不到 to_download: 直接把新函数追加到文件末尾 (兜底)
+        cp -f "${KOD_API}.step1" "${KOD_API}.new"
+        cat "$KOD_NEWFN" >> "${KOD_API}.new"
+    fi
+    rm -f "${KOD_API}.step1" "$KOD_NEWFN"
+
+    # ③ 语法校验 (有 luac 就编译检查; 失败回滚)
+    PATCH_OK=0
+    KOD_LUAC="$(command -v luac || command -v luac5.1 || true)"
+    if [ -n "$KOD_LUAC" ]; then
+        if "$KOD_LUAC" -p "${KOD_API}.new" 2>/dev/null; then
+            PATCH_OK=1
+            echo "[diy-part2] api.lua to_check() 已替换, luac 语法校验通过"
+        else
+            echo "[diy-part2] WARNING: api.lua 补丁语法校验失败, 已回滚为上游原版"
+            "$KOD_LUAC" -p "${KOD_API}.new" 2>&1 | head -3 | sed 's/^/[diy-part2]   /'
+        fi
+    else
+        # ④ 无 luac: 结构校验
+        if grep -q '^function to_check()' "${KOD_API}.new" \
+           && grep -q 'function to_download' "${KOD_API}.new"; then
+            PATCH_OK=1
+            echo "[diy-part2] api.lua to_check() 已替换 (无 luac, 结构校验通过)"
+        else
+            echo "[diy-part2] WARNING: api.lua 补丁结构校验失败, 已回滚为上游原版"
+        fi
+    fi
+
+    if [ "$PATCH_OK" = "1" ]; then
+        mv -f "${KOD_API}.new" "$KOD_API"
+        grep -q "${KODBOX_URL}" "$KOD_API" \
+            && echo "[diy-part2] api.lua patched OK (含下载链接)" \
+            || echo "[diy-part2] WARNING: api.lua 已替换但未含下载链接, 请检查"
+    else
+        rm -f "${KOD_API}.new"
+        cp -f "${KOD_API}.orig" "$KOD_API"
+        echo "[diy-part2] api.lua 保持上游原版 (功能不受影响, 仅\"手动更新\"按钮可能不可用)"
+    fi
 else
     echo "[diy-part2] WARNING: $KOD_API not found, skip patch"
 fi
