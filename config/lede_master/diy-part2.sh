@@ -763,3 +763,237 @@ echo "[diy-part2] === Aria2 修复段完成 ==="
 #   回滚: 恢复本段并取消上方三行注释即可, 或 git revert 本次 commit
 #   回滚点: main @ e30c674ab1b6
 #=====================================================================================
+
+#=====================================================================================
+# Docker 对齐参考机 192.168.1.60   [added 2026-10-08]
+#
+# 参考机 .60 (flippy/armvirt) 的 docker 行为:
+#   Storage Driver : overlay2   (经典 image store, 目录 image/overlay2)
+#   data-root      : /mnt/mmcblk2p4/docker   (ext4)
+#   log-driver     : json-file + log-opts max-size=10m, max-file=5
+#   containerd     : 1.7.x, 未启用 containerd snapshotter
+#
+# 本固件 (.100.1, LEDE / dockerd 29.6.1) 实测异常:
+#   ① Storage Driver = overlayfs / io.containerd.snapshotter.v1
+#      → Docker 29 默认强制启用 containerd image store
+#        (dockerd 日志: "Starting daemon with containerd snapshotter integration enabled")
+#        → image save/load/export 行为与参考机不同, 是"镜像导入导出"类问题的根源
+#   ② /tmp/dockerd/daemon.json (真正生效的配置) 里【没有】log-driver / log-opts
+#      → 容器日志无限增长。根因见 ③
+#   ③ 【核心 bug】dockerd 的 init 脚本只读 UCI, 生成 /tmp/dockerd/daemon.json;
+#      它【不会】读 /etc/docker/daemon.json。原 99-docker-flippy 写了一份带日志轮转的
+#      daemon.json 却从未设置 alt_config_file, 那份文件被完全忽略。
+#      (该脚本注释"lede dockerd 以 uci 为准, daemon.json 为辅"是误解)
+#      实测: /etc/uci-defaults/ 里 99-docker-flippy 执行到第③步(建 /opt/docker 软链)
+#            后就中断了, /etc/docker/daemon.json 根本没有生成。
+#
+# 修复 (构建期, 幂等):
+#   A. 给 uci-defaults 脚本补 alt_config_file + storage_driver + snapshotter=false
+#      → init 脚本 process_config() 会 ln -s 我们的 daemon.json 到
+#        /tmp/dockerd/daemon.json, 使其成为唯一权威配置
+#      ! 注意: alt_config_file 是【整体替换】而非合并 —— init 脚本一旦走这条路,
+#        UCI 里的 data_root/bip/registry_mirrors 全部失效。所以 daemon.json
+#        必须自带完整键集, 否则 data-root 会掉回 /tmp/lib/docker (tmpfs, 重启即失)。
+#        (已在真机验证过这个坑)
+#   B. 新增 99-docker-align: 首启兜底生成完整 daemon.json 并挂上 alt_config_file
+#
+# 实现说明: A 段用 python3 做文本插入, 不用 sed/awk —— 经实测, sed 的 s|||
+#   表达式在 "shell -> sed" 多层引号下会静默失配(rc=0 但不插入), awk 同理。
+#   python3 在 Ubuntu runner 上必然存在, 引号完全可控。A3 的 sed 已实测通过。
+#
+# data-root 为何不在构建期烤死:
+#   99-docker-flippy 在首启时按实际数据分区动态生成 data-root
+#   (X96Max+ → /mnt/mmcblk1p4, N1 → 对应磁盘), 故 99-docker-align 在其之后
+#   (同目录按文件名排序) 兜底补齐, 并复用 /opt/docker 软链结果。
+#
+# 回滚: 删除本段 + 删除 files/etc/uci-defaults/99-docker-align,
+#       或 git revert 本次 commit
+#=====================================================================================
+echo "[diy-part2] === Docker 对齐参考机 .60 ==="
+
+UCD_DOCKER="${REPO_ROOT}/files/etc/uci-defaults/99-docker-flippy"
+
+if [ -f "${UCD_DOCKER}" ]; then
+    # ---- A1 + A2 + A3. 用 python3 一次完成三处插入 ----
+    #   A1/A2: 往 uci batch 块插入 alt_config_file / storage_driver
+    #   A3   : 往它生成的 daemon.json 模板插入 storage-driver / containerd-snapshotter
+    #   全部用 python3 而非 sed/awk —— 经实测 sed 的 s||| 表达式在
+    #   "shell -> sed" 多层引号下会静默失配(rc=0 却不插入)。
+    python3 - "${UCD_DOCKER}" <<'PYEOF'
+import io, sys, os, json, re
+p = sys.argv[1]
+
+if not os.path.exists(p):
+    print("[diy-part2]   WARNING: %s not found" % p)
+    sys.exit(1)
+
+s = io.open(p, 'r', encoding='utf-8', newline='').read()
+changed = []
+
+# ---- A1/A2: uci batch 块 ----
+if 'alt_config_file' not in s:
+    anchor = "set dockerd.globals.iptables='true'"
+    if anchor in s:
+        s = s.replace(anchor,
+                      anchor + "\n"
+                      "set dockerd.globals.alt_config_file='/etc/docker/daemon.json'\n"
+                      "set dockerd.globals.storage_driver='overlay2'", 1)
+        changed.append('uci:alt_config_file+storage_driver')
+    else:
+        print("[diy-part2]   WARNING: iptables anchor not found in uci block")
+else:
+    changed.append('uci:already-present')
+
+# ---- A3: daemon.json 模板 ----
+if 'containerd-snapshotter' not in s:
+    pat = '  "log-level": "warn",'
+    if pat in s:
+        s = s.replace(pat,
+                      pat + "\n"
+                      '  "storage-driver": "overlay2",\n'
+                      '  "features": { "containerd-snapshotter": false },', 1)
+        changed.append('json:storage-driver+snapshotter')
+    else:
+        print("[diy-part2]   WARNING: log-level anchor not found in daemon.json template")
+else:
+    changed.append('json:already-present')
+
+io.open(p, 'w', encoding='utf-8', newline='').write(s)
+print("[diy-part2]   changed: %s" % ", ".join(changed))
+
+# ---- 校验: 解析脚本里真实生成的 daemon.json 模板 ----
+# 路径用 \S* 宽容匹配 (上游可能写成 /tmp/... 或其他位置);
+# 找不到或解析失败只告警、不中止构建 —— 真正的兜底是 99-docker-align,
+# 它在首启时会写出完整正确的 daemon.json。
+m = re.search(r'cat > \S*daemon\.json <<EOF\r?\n(.*?)\r?\nEOF', s, re.S)
+if not m:
+    print("[diy-part2]   WARN: daemon.json heredoc not located in template "
+          "(99-docker-align 仍会在首启兜底)")
+else:
+    body = m.group(1).replace('${DATA_ROOT}', '/tmp/__placeholder__/')
+    try:
+        obj = json.loads(body)
+    except Exception as e:
+        print("[diy-part2]   WARN: generated daemon.json is not valid JSON (%s); "
+              "99-docker-align 会在首启兜底" % e)
+    else:
+        need = ['data-root', 'log-driver', 'log-opts', 'storage-driver',
+                'features', 'registry-mirrors']
+        missing = [k for k in need if k not in obj]
+        if missing:
+            print("[diy-part2]   WARN: daemon.json missing keys: %s" % missing)
+        elif obj.get('storage-driver') != 'overlay2':
+            print("[diy-part2]   WARN: storage-driver != overlay2")
+        elif obj.get('features', {}).get('containerd-snapshotter') is not False:
+            print("[diy-part2]   WARN: containerd-snapshotter is not false")
+        else:
+            print("[diy-part2]   OK: daemon.json template valid, "
+                  "storage-driver=overlay2, snapshotter=false")
+PYEOF
+    PY_RC=$?
+    if [ "${PY_RC}" != "0" ]; then
+        echo "[diy-part2] WARNING: 99-docker-flippy 对齐脚本返回 rc=${PY_RC}, 请检查"
+    fi
+else
+    echo "[diy-part2] WARNING: ${UCD_DOCKER} 未找到, 跳过 A 段 (仍由 99-docker-align 兜底)"
+fi
+
+# ---- B. 首启兜底脚本 ----
+ALIGN="${REPO_ROOT}/files/etc/uci-defaults/99-docker-align"
+if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
+    cat > "${ALIGN}" <<'ALIGN_EOF'
+#!/bin/sh
+#======================================================================================
+# Docker 对齐参考机 192.168.1.60   (first boot, 幂等, 非破坏)
+#   由 config/lede_master/diy-part2.sh 生成, 请勿手工编辑
+#
+# 目的: 让 dockerd 真正采用 /etc/docker/daemon.json, 并关闭 Docker 29 默认强制的
+#       containerd image store, 回到参考机 .60 的经典 overlay2 + 日志轮转行为。
+#
+# 关键: dockerd 的 init 脚本只读 UCI, 不读 /etc/docker/daemon.json。
+#       alt_config_file 会让 init 脚本 `ln -s` 该文件到 /tmp/dockerd/daemon.json,
+#       且为【整体替换】而非合并 —— 故本文件必须自带完整键集。
+#======================================================================================
+
+# ---- ① 定位数据分区 (与 99-docker-flippy 同逻辑, 优先复用其软链) ----
+DATA_ROOT=""
+if [ -L /opt/docker ]; then
+    DATA_ROOT="$(readlink -f /opt/docker)"
+fi
+
+if [ -z "${DATA_ROOT}" ] || [ ! -d "${DATA_ROOT}" ]; then
+    ROOT_PTNAME=$(df / | tail -n1 | awk '{print $1}' | awk -F '/' '{print $3}')
+    case "$ROOT_PTNAME" in
+        mmcblk?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//'); PT_PRE="${DISK}p" ;;
+        nvme?n?p[1-9]*)    DISK=$(echo "$ROOT_PTNAME" | sed 's/p[0-9]*$//'); PT_PRE="${DISK}p" ;;
+        [hsv]d[a-z][1-9]*) DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');  PT_PRE="${DISK}"  ;;
+        *)                 DISK=$(echo "$ROOT_PTNAME" | sed 's/[0-9]*$//');  PT_PRE="${DISK}"  ;;
+    esac
+    for cand in "/mnt/${PT_PRE}4" "/mnt/${PT_PRE}3" "/mnt/mmcblk1p4" "/mnt/mmcblk2p4"; do
+        [ -n "$cand" ] || continue
+        if mountpoint -q "$cand" 2>/dev/null || grep -q " ${cand} " /proc/mounts 2>/dev/null; then
+            DATA_ROOT="${cand}/docker"
+            break
+        fi
+    done
+fi
+
+if [ -z "${DATA_ROOT}" ]; then
+    DATA_ROOT="/opt/docker"
+    echo "[99-docker-align] WARNING: 未找到大容量数据分区, 回退 ${DATA_ROOT}"
+fi
+mkdir -p "${DATA_ROOT}" 2>/dev/null
+DATA_ROOT="${DATA_ROOT%/}/"
+
+# ---- ② 写出完整 daemon.json (权威配置, 必须自带全部键) ----
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<EOF
+{
+  "data-root": "${DATA_ROOT}",
+  "bip": "172.31.0.1/24",
+  "iptables": true,
+  "ip6tables": false,
+  "log-level": "warn",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5"
+  },
+  "storage-driver": "overlay2",
+  "features": {
+    "containerd-snapshotter": false
+  },
+  "registry-mirrors": [
+    "https://mirror.baidubce.com/",
+    "https://hub-mirror.c.163.com"
+  ]
+}
+EOF
+
+# ---- ③ 让 init 脚本采用它 (整体替换语义, 见文件头说明) ----
+uci -q batch <<EOF
+set dockerd.globals.alt_config_file='/etc/docker/daemon.json'
+set dockerd.globals.storage_driver='overlay2'
+commit dockerd
+EOF
+
+# ---- ④ 生效 ----
+if [ -x /etc/init.d/dockerd ]; then
+    /etc/init.d/dockerd enable
+    /etc/init.d/dockerd restart
+fi
+
+# ---- ⑤ 自检 ----
+D=$(pidof dockerd 2>/dev/null | awk '{print $1}')
+if [ -n "$D" ]; then
+    logger -t 99-docker-align "dockerd up: $(docker info 2>/dev/null | grep -i 'Storage Driver' | head -1)"
+fi
+exit 0
+ALIGN_EOF
+    chmod 0755 "${ALIGN}"
+    echo "[diy-part2] 99-docker-align 已生成: ${ALIGN}"
+else
+    echo "[diy-part2] WARNING: ${REPO_ROOT}/files/etc/uci-defaults 不存在, 跳过 B 段"
+fi
+
+echo "[diy-part2] === Docker 对齐段完成 ==="
