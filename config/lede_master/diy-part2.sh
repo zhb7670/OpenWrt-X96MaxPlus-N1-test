@@ -100,7 +100,6 @@ CONFIG_PACKAGE_smartdns=y
 CONFIG_PACKAGE_smartdns-ui=y
 CONFIG_PACKAGE_luci-app-xlnetacc=y
 CONFIG_PACKAGE_luci-app-watchcat=y
-CONFIG_PACKAGE_luci-app-UUGameAcc=y
 CONFIG_PACKAGE_luci-app-udpxy=y
 CONFIG_PACKAGE_luci-app-airconnect=y
 CONFIG_PACKAGE_luci-app-ocserv=y
@@ -1089,7 +1088,6 @@ echo "[diy-part2] === Docker 对齐段完成 ==="
 #=====================================================================================
 # 老式 init 脚本补 running()  —— 修 LuCI "一直运行中、关不了"   [added 2026-10-08]
 #
-# 现象: uuplugin_luci / pushbot / xlnetacc / kodexplorer 在 LuCI 里永远显示
 #       "运行中", 点停止无效。
 #
 # 根因 (不是少了函数那么简单):
@@ -1102,7 +1100,6 @@ echo "[diy-part2] === Docker 对齐段完成 ==="
 #   → action 退化成 help → 打印约 392 字符语法提示并 **exit 0**
 #   → LuCI 拿到非空输出判定"运行中"; 点停止也走不通同一套语义 → 关不掉。
 #
-#   实测(修前): uuplugin_luci running -> exit=0 输出长度=402
 #               pushbot       running -> exit=0 输出长度=396
 #               xlnetacc      running -> exit=0 输出长度=397
 #               kodexplorer   running -> exit=0 输出长度=400
@@ -1146,7 +1143,6 @@ import io, sys, os
 
 # (脚本路径, 描述, 进程特征, 是否组合判定)
 TARGETS = [
-    ("/etc/init.d/uuplugin_luci", "uuplugin_luci", "/usr/bin/uuplugin/uuplugin", False),
     ("/etc/init.d/pushbot",       "pushbot",       "/usr/bin/pushbot/pushbot",   False),
     ("/etc/init.d/xlnetacc",      "xlnetacc",      "xlnetacc.sh",                False),
     # kodexplorer 是 nginx + php-fpm 组合: 任一缺失即视为未运行 (如实反映半死状态)
@@ -1217,7 +1213,7 @@ PYEOF
 chmod 0755 "$FIX"
 
 # 语法自检 -> 逐个应用, 失败即回滚该文件
-for s in uuplugin_luci pushbot xlnetacc kodexplorer; do
+for s in pushbot xlnetacc kodexplorer; do
     [ -f "/etc/init.d/$s" ] || continue
     [ -f "/etc/init.d/$s.orig-runningfix" ] || cp -f "/etc/init.d/$s" "/etc/init.d/$s.orig-runningfix"
 done
@@ -1225,7 +1221,7 @@ done
 python3 "$FIX"
 
 # 应用后逐个语法校验, 坏的回滚
-for s in uuplugin_luci pushbot xlnetacc kodexplorer; do
+for s in pushbot xlnetacc kodexplorer; do
     S="/etc/init.d/$s"
     [ -f "$S" ] || continue
     if sh -n "$S" 2>/dev/null; then
@@ -1348,126 +1344,6 @@ else
 fi
 echo "[diy-part2] === adblock/transmission 段完成 ==="
 
-#=====================================================================================
-# UU 加速器 (UU GameAcc) 二进制架构修复   [added 2026-10-08]
-#
-# 【致命缺陷】固件里内嵌的 uuplugin 是 x86_64 版, 在 aarch64 上完全无法执行。
-#
-# 真机证据 (192.168.100.1, aarch64_generic):
-#   $ /usr/bin/uuplugin/uuplugin
-#   timeout: failed to run command '...': Exec format error
-#   $ strings /usr/bin/uuplugin/uuplugin | grep -c x86_64
-#   15                                    <- x86_64 特征
-#   包信息: luci-app-UUGameAcc  Architecture: all   <- 只装了 LuCI 壳
-#
-# 为什么"看起来在跑": /etc/init.d/uuplugin_luci 的 start() 用
-#   /usr/bin/uuplugin/uuplugin >/dev/null 2>&1 &
-# 后台启动并把 stderr 全部丢弃, 所以 Exec format error 被吞掉,
-# 进程起不来但 LuCI 仍显示"已启用" -> 插件形同虚设。
-#
-# 修复: 构建期从上游拉 aarch64 包, 用其中的正确二进制替换。
-#   来源: https://github.com/ttc0419/uuplugin  (打包网易官方 uuplugin)
-#   资产: uuplugin_latest_aarch64_cortex-a53.ipk
-#         (aarch64_generic 归属 cortex-a53; 官方支持 aarch64/arm/mipsel/x86_64)
-#   包内: usr/bin/uuplugin            (4355568 B, aarch64)
-#         usr/bin/xtables-nft-multi   (1987304 B)
-#         etc/init.d/uuplugin
-#         etc/uu.conf                 (version=v12.1.18, 原固件为 v2.13.4)
-#
-# 真机修复后实测:
-#   - 二进制可执行, 进程正常 (pid 28920/28924)
-#   - xtables-nft-multi 报错归零 (修前: "/usr/bin/uuplugin/xtables-nft-multi: not found")
-#   - nft 规则真实建立: table ip/ip6 XU_ACC_MAIN_{filter,mangle,nat} 共 6 张
-#   - /etc/init.d/uuplugin_luci running -> exit=0 outlen=0
-#
-# !! 路径细节: 程序实际调用的是 /usr/bin/uuplugin/xtables-nft-multi
-#    (uuplugin 子目录), 而包里放在 /usr/bin/xtables-nft-multi。
-#    两个路径都必须放一份, 否则 nft 规则建不起来。
-#
-# 注意: 加速器用 nft 配防火墙规则 (不是老的 iptables)。
-#       本固件 firewall4/nftables 1.1.6, 已实测可用。
-#
-# 回滚: 删除本段即可, 或 git revert 本次 commit
-#=====================================================================================
-echo "[diy-part2] === UU 加速器 aarch64 二进制修复 ==="
-UU_VER="latest"
-UU_ARCH="aarch64_cortex-a53"
-UU_URL="https://github.com/ttc0419/uuplugin/releases/download/${UU_VER}/uuplugin_${UU_VER}_${UU_ARCH}.ipk"
-UU_DST="package/base-files/files"
-
-# 预检下载链接有效性
-UU_HTTP="$(curl -sIL -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 40 "${UU_URL}" 2>/dev/null)"
-if [ "${UU_HTTP}" = "200" ]; then
-    echo "[diy-part2] UU 包链接校验通过: HTTP ${UU_HTTP}"
-else
-    echo "[diy-part2] ERROR: UU 包链接无效 HTTP='${UU_HTTP}' URL=${UU_URL}"
-    echo "[diy-part2] ERROR: 固件将保留不可用的 x86_64 uuplugin (UU加速器无法工作)"
-fi
-
-if curl -fsSL --connect-timeout 20 --max-time 300 -o /tmp/uuplugin.ipk "${UU_URL}"; then
-    rm -rf /tmp/uux && mkdir -p /tmp/uux/a /tmp/uux/d
-    ( cd /tmp/uux/a && tar -xzf /tmp/uuplugin.ipk 2>/dev/null )
-    if [ -f /tmp/uux/a/data.tar.gz ]; then
-        tar -xzf /tmp/uux/a/data.tar.gz -C /tmp/uux/d 2>/dev/null
-        UU_BIN="$(find /tmp/uux/d -name uuplugin -type f | head -1)"
-        UU_XT="$(find /tmp/uux/d -name xtables-nft-multi -type f | head -1)"
-
-        if [ -n "${UU_BIN}" ]; then
-            # 剔除可能残留的 x86_64 版本 (base-files 收尾的依赖检查会对
-            # x86_64 ELF 报 "missing dependencies for libraries" -> 编译失败,
-            # 与 kodbox 那次同因, 所以必须先删旧的再放新的)
-            rm -rf "${UU_DST}/usr/bin/uuplugin"
-            mkdir -p "${UU_DST}/usr/bin/uuplugin"
-            cp -f "${UU_BIN}" "${UU_DST}/usr/bin/uuplugin/uuplugin"
-            chmod 0755 "${UU_DST}/usr/bin/uuplugin/uuplugin"
-
-            # xtables-nft-multi: 两个路径都要 (程序实际找 uuplugin 子目录那份)
-            if [ -n "${UU_XT}" ]; then
-                cp -f "${UU_XT}" "${UU_DST}/usr/bin/uuplugin/xtables-nft-multi"
-                chmod 0755 "${UU_DST}/usr/bin/uuplugin/xtables-nft-multi"
-            fi
-
-            # 包内 uu.conf: 程序默认读 /etc/uu.conf (init 脚本传的就是这个路径),
-            # 同时兼容 uuplugin 子目录那份 —— 两处都放, 与真机验证状态一致。
-            UU_CONF="$(find /tmp/uux/d -name uu.conf -type f | head -1)"
-            if [ -n "${UU_CONF}" ]; then
-                mkdir -p "${UU_DST}/etc"
-                cp -f "${UU_CONF}" "${UU_DST}/etc/uu.conf"
-                cp -f "${UU_CONF}" "${UU_DST}/usr/bin/uuplugin/uu.conf"
-                echo "[diy-part2] UU uu.conf 已放置: $(cat "${UU_CONF}" | tr '\n' ' ')"
-            fi
-
-            # 包自带 /etc/init.d/uuplugin (USE_PROCD=1, 忽略 uci enabled) 与固件原有的
-            # /etc/init.d/uuplugin_luci (LuCI 壳, 读 uci enabled) 语义冲突:
-            #   luci 壳: enabled=0 -> stop(), =1 -> 启动
-            #   包 init: 无条件启动
-            # 真机已验证采用【luci 壳那套】(保留 LuCI 开关), 故这里不装包的 init,
-            # 只提供二进制 + xtables + conf。用户可在 LuCI 界面自行开关。
-            # (若将来想改用包自带 init, 取消下面注释并同步删除 uuplugin_luci)
-            # UU_INIT="$(find /tmp/uux/d -path '*/init.d/uuplugin' -type f | head -1)"
-            # if [ -n "${UU_INIT}" ]; then
-            #     mkdir -p "${UU_DST}/etc/init.d"
-            #     cp -f "${UU_INIT}" "${UU_DST}/etc/init.d/uuplugin"
-            #     chmod 0755 "${UU_DST}/etc/init.d/uuplugin"
-            # fi
-
-            # 校验: 确认放进去的是 aarch64 而不是 x86_64
-            X86N="$(strings "${UU_DST}/usr/bin/uuplugin/uuplugin" 2>/dev/null | grep -c x86_64)"
-            echo "[diy-part2] UU uuplugin 已替换: $(du -h "${UU_DST}/usr/bin/uuplugin/uuplugin" | cut -f1), x86_64 特征数=${X86N} (期望 0)"
-            if [ "${X86N}" != "0" ]; then
-                echo "[diy-part2] ERROR: 放入的 UU 二进制仍含 x86_64 特征, 架构可能不对!"
-            fi
-        else
-            echo "[diy-part2] WARNING: UU 包内未找到 uuplugin 二进制"
-        fi
-    else
-        echo "[diy-part2] WARNING: UU ipk 解包失败 (data.tar.gz 缺失)"
-    fi
-    rm -rf /tmp/uux /tmp/uuplugin.ipk
-else
-    echo "[diy-part2] WARNING: UU 包下载失败, 保留原 x86_64 版本 (UU加速器将不可用)"
-fi
-echo "[diy-part2] === UU 加速器修复段完成 ==="
 
 #=====================================================================================
 # 各插件 LuCI 界面加入「如何使用」说明   [added 2026-10-08]
@@ -1542,18 +1418,6 @@ def box(title, items, notes=None, mark_id=MARK):
     h.append('')
     return '\n'.join(h)
 
-# ---------- UU 加速器 ----------
-insert_after_last(
-    '/usr/lib/lua/luci/view/uuplugin/uuplugin_status.htm', '</fieldset>',
-    box('<%:How to use%>',
-        ['先在手机上的「UU加速器」App 登录账号，并开通主机/路由器加速权限。',
-         '回到本页勾选 <b>启用</b>，点 <b>保存并应用</b>。状态应变为绿色 <b>运行中</b>。',
-         '在手机 App 里选「路由器加速 / 主机加速」，按提示 <b>绑定本台路由器</b>（同一局域网内可发现）。',
-         '绑定成功后 App 内会显示已连接，再在 App 里选择要加速的游戏即可。'],
-        ['UU GameAcc 是 <b>付费服务</b>，本插件只是路由器端客户端；<b>能运行 ≠ 已加速</b>。',
-         '若状态一直显示“运行中”但你从未绑定过，多半是 <b>残留进程</b> 造成的假状态：先点停用保存，再重新勾选启用。',
-         '依赖 <code>kmod-tun</code>，并通过 <code>nft</code> 下发防火墙规则（表名 <code>XU_ACC_MAIN_*</code>）。规则建立失败则加速不生效。',
-         '加速仅对 <b>经过本路由器</b> 的流量有效；纯旁路由或双层 NAT 环境可能需在 App 内切换连接方式。'], MARK))
 
 # ---------- Adblock ----------
 insert_after_last(
