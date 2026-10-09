@@ -1675,22 +1675,39 @@ if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
 
 CHANGED=0
 
-# ---- ① network: 注册 docker0 网桥设备 ----
-if ! uci -q get network.docker0 >/dev/null 2>&1; then
-    # 先看是否已有同名 name=docker0 的 device
-    HAVE_DEV=0
-    uci -q show network | grep -q "\.name='docker0'" && HAVE_DEV=1
-    if [ "${HAVE_DEV}" = "0" ]; then
-        uci -q add network device >/dev/null 2>&1
-        uci -q rename network.@device[-1]='docker0' 2>/dev/null
-        uci -q set network.docker0.name='docker0'
-        uci -q set network.docker0.type='bridge'
-        uci -q set network.docker0.bridge_empty='1' 2>/dev/null
-        uci -q commit network
-        logger -t docker-fwzone "registered network.docker0 (bridge device)"
-        CHANGED=1
-    fi
+# ---- ① network: 建 docker 逻辑接口 (官方 /etc/init.d/dockerd uciadd 的语义) ----
+#   旧写法是手工加 network.docker0=device + type=bridge, 有两个问题:
+#     a) netifd 会把这个 device 当成"它要管理的网桥", 与 docker 自己创建的
+#        docker0 冲突 —— 实测 network reload 会把 docker0 拆掉, 之后
+#        `docker run` 报 "adding interface vethXXX to bridge docker0 failed:
+#        Device does not exist"
+#     b) firewall zone 的 network 列表跟踪的是【逻辑接口名】, 不是 device 名,
+#        只加 device 段时 fw4 解析出的 docker_devices 为空 -> accept_to_docker
+#        是空链, 外部依然访问不了。
+#   正确做法 (与 /etc/init.d/dockerd 的 uciadd 一致):
+#     network.docker = interface, proto=none, device=docker0, auto=0
+#     再配一个 name=docker0 的 device 段
+#   type 用 none 而非 bridge: 让 netifd【不接管】docker0 (避免冲突),
+#   firewall4 仍能通过 zone 的 network='docker' 解析到该设备。
+if ! uci -q get network.docker >/dev/null 2>&1; then
+    uci -q add network interface >/dev/null 2>&1
+    uci -q rename network.@interface[-1]='docker' 2>/dev/null
+    uci -q set network.docker.proto='none'
+    uci -q set network.docker.device='docker0'
+    uci -q set network.docker.auto='0'
+    logger -t docker-fwzone "created network.docker (interface, proto=none)"
+    CHANGED=1
 fi
+# device 段: 供 netifd/fw4 识别 docker0 这个设备名
+if ! uci -q show network | grep -q "\.name='docker0'"; then
+    uci -q add network device >/dev/null 2>&1
+    uci -q rename network.@device[-1]='docker0dev' 2>/dev/null
+    uci -q set network.docker0dev.name='docker0'
+    uci -q set network.docker0dev.type='none'
+    logger -t docker-fwzone "registered network.docker0dev (device, type=none)"
+    CHANGED=1
+fi
+uci -q commit network
 
 # ---- ② firewall zone 'docker' ----
 if ! uci -q get firewall.docker >/dev/null 2>&1; then
