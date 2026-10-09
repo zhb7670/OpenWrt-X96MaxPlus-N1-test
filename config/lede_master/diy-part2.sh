@@ -2277,7 +2277,10 @@ echo "[diy-part2] === UU 加速器: aarch64 二进制 + procd 化 ==="
 UU_VER="latest"
 UU_ARCH="aarch64_cortex-a53"
 UU_URL="https://github.com/ttc0419/uuplugin/releases/download/${UU_VER}/uuplugin_${UU_VER}_${UU_ARCH}.ipk"
-UU_DST="package/base-files/files"
+# [fix 2026-10-10] 必须写进 ${REPO_ROOT}/files/, 而不是直接写 package/base-files/files/:
+#   本脚本末尾会做一次统一的 files/ 重新注入, 直写 package 目录会在
+#   重新注入时被仓库里旧的 x86_64 版本覆盖掉。
+UU_DST="${REPO_ROOT}/files"
 
 UU_HTTP="$(curl -sIL -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 40 "${UU_URL}" 2>/dev/null)"
 if [ "${UU_HTTP}" = "200" ]; then
@@ -2396,3 +2399,56 @@ UUUCI_EOF
     echo "[diy-part2] 99-uuplugin-enable 已生成"
 fi
 echo "[diy-part2] === UU 加速器段完成 ==="
+
+#=====================================================================================
+# ★★★ 关键修复 (2026-10-10): 末尾重新注入 files/ ★★★
+#
+# 【为什么必须加这一段】
+#   本脚本第 224 行做过一次注入:
+#       cp -rf "${REPO_ROOT}/files/." package/base-files/files/
+#   但那一行在【脚本开头】。而本脚本后半段 (L900~L2400)
+#   生成的所有文件都写到 ${REPO_ROOT}/files/ 下 ——
+#   那时注入早就做完了, 之后再没人注入, 所以它们【从未进入固件】。
+#
+#   涉及的文件 (全部受影响):
+#     99-docker-firewall-zone / 99-docker-align / 99-service-triggers-fill /
+#     99-init-running-fix / 99-adblock-and-services / 99-plugin-usage-guide /
+#     99-pushbot-and-stray-cleanup / 99-xlnetacc-direction /
+#     99-aria2-transmission-kodbox / 99-uuplugin-enable / 99-wifi-detect-enable /
+#     etc/init.d/wifi-detect-init / etc/init.d/uuplugin_luci /
+#     usr/bin/uuplugin/* / usr/lib/plugin-usage-guide.py
+#
+# 【实证】(下载 RUN#22 的 release rootfs 逐项核对)
+#   etc/uci-defaults/99-docker-flippy               存在  <- 仓库里的真文件
+#   etc/uci-defaults/99-docker-firewall-zone        不存在 <- 本脚本生成
+#   etc/uci-defaults/99-service-triggers-fill       不存在 <- 本脚本生成
+#   etc/uci-defaults/99-aria2-transmission-kodbox   不存在 <- 本脚本生成
+#   etc/uci-defaults/99-uuplugin-enable             不存在 <- 本脚本生成
+#   etc/init.d/wifi-detect-init                     不存在 <- 本脚本生成
+#   usr/bin/uuplugin/uuplugin  3034251 B (x86_64 原版, 未被替换)
+#   => 凡是本脚本【生成】的文件一个都没进固件,
+#      凡是仓库里【已有】的文件都进了。
+#
+# 【注意】workflow 的 "Load custom configuration" 步骤注释明确写了
+#   "此处不再 mv 到 openwrt/files", 也就是 openwrt/files 是死目录,
+#   唯一通道就是本脚本的 cp。所以必须在末尾补一次。
+#=====================================================================================
+echo "[diy-part2] === 末尾重新注入 files/ (关键: 保证生成的文件进固件) ==="
+if [ -d "${REPO_ROOT}/files" ] && [ -d package/base-files/files ]; then
+    cp -rf "${REPO_ROOT}/files/." package/base-files/files/
+    find package/base-files/files/etc/uci-defaults -type f -exec chmod +x {} \; 2>/dev/null || true
+    find package/base-files/files/etc/init.d -type f -exec chmod +x {} \; 2>/dev/null || true
+    echo "[diy-part2] ---- 已注入的 uci-defaults ----"
+    find package/base-files/files/etc/uci-defaults -type f -name '99-*' 2>/dev/null | sort
+    echo "[diy-part2] ---- 已注入的 init.d ----"
+    find package/base-files/files/etc/init.d -type f 2>/dev/null | grep -E 'wifi-detect|uuplugin' | sort
+    echo "[diy-part2] ---- uuplugin 二进制核对 ----"
+    if [ -f package/base-files/files/usr/bin/uuplugin/uuplugin ]; then
+        echo "[diy-part2]   size=$(wc -c < package/base-files/files/usr/bin/uuplugin/uuplugin) x86_64_features=$(strings package/base-files/files/usr/bin/uuplugin/uuplugin 2>/dev/null | grep -c x86_64)"
+    else
+        echo "[diy-part2]   WARNING: usr/bin/uuplugin/uuplugin 不存在"
+    fi
+else
+    echo "[diy-part2] WARNING: 末尾注入失败 (REPO_ROOT/files 或 package/base-files/files 不存在)"
+fi
+echo "[diy-part2] === 全部 DIY 段完成 ==="
