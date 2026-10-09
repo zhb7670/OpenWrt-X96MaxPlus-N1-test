@@ -274,7 +274,11 @@ KODBOX_VER_FULL="1.69.03"
 KODBOX_URL="https://static.kodcloud.com/update/download/kodbox.${KODBOX_VER}.zip"
 # 注入到数据分区挂载点 (p4 有 11G, rootfs 只有 3G)
 # 注: /mnt/mmcblk1p4 由首启 ophub 脚本创建, 此目录在固件里是挂载点
-KODBOX_DST="package/base-files/files/mnt/mmcblk1p4/kodexplorer"
+# [fix 2026-10-10] 不要直接投放到 mnt/mmcblk1p4/ 下!
+#   那是真实挂载点, 镜像里放进去会被挂载后遮住 => 装完目录是空的。
+#   改为投放到 /opt/kodbox-dist (非挂载路径), 由首启脚本 99-kodbox-install
+#   在 p4 挂载好之后搬到 /mnt/mmcblk1p4/kodexplorer。
+KODBOX_DST="${REPO_ROOT}/files/opt/kodbox-dist"
 # ---- 2a. 预检: 更新 URL 必须有效 (HTTP 200)   [added 2026-10-08] ----
 #   背景: 原实现只写 "if curl ...; then ... else echo WARNING 跳过注入"。
 #         URL 一旦失效(上游删 tag/改名), 编译照样"成功", 但固件里根本没有
@@ -668,7 +672,7 @@ if [ -f "${ADB_DIR}/Makefile" ]; then
 # 仅在选项不存在时写入, 不覆盖用户已保存的配置。
 [ -x /etc/init.d/adblock ] || exit 0
 cur="$(uci -q get adblock.global.adb_enabled)"
-if [ -z "$cur" ]; then
+if [ "$cur" != "1" ]; then
     uci -q set adblock.global.adb_enabled='1'
     uci -q commit adblock
 fi
@@ -1324,7 +1328,7 @@ fi
 if [ -f /etc/config/transmission ] || uci -q show transmission >/dev/null 2>&1; then
     uci -q get transmission.@transmission[0] >/dev/null 2>&1 || uci -q add transmission transmission
     # 只在未设置时补 1, 不覆盖用户显式关闭
-    if [ -z "$(uci -q get transmission.@transmission[0].enabled)" ]; then
+    if [ "$(uci -q get transmission.@transmission[0].enabled)" != "1" ]; then
         uci -q set transmission.@transmission[0].enabled='1'
         logger -t transmission-init "preset enabled=1"
     fi
@@ -1382,7 +1386,7 @@ import io, os
 
 MARK = 'plugin-usage-guide'
 
-def insert_after_last(path, close_tag, block, mark_id):
+def insert_after_last(path, close_tag, block, mark_id=MARK):
     if not os.path.isfile(path):
         print('  skip (missing): %s' % path)
         return
@@ -1520,7 +1524,7 @@ if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
 # 注意: 不能无条件覆盖 —— 若用户已显式设为 0 (表示不想跑), 尊重用户选择。
 if [ -f /etc/config/pushbot ] || uci -q show pushbot >/dev/null 2>&1; then
     uci -q get pushbot.pushbot >/dev/null 2>&1 || uci -q add pushbot pushbot
-    if [ -z "$(uci -q get pushbot.pushbot.pushbot_enable)" ]; then
+    if [ "$(uci -q get pushbot.pushbot.pushbot_enable)" != "1" ]; then
         uci -q set pushbot.pushbot.pushbot_enable='1'
         logger -t pushbot-init "preset pushbot_enable=1"
     fi
@@ -1969,7 +1973,7 @@ if [ -f /etc/config/aria2 ] || uci -q show aria2 >/dev/null 2>&1; then
         uci -q set aria2.main.dir="$newdir"
         logger -t aria2-init "download dir -> ${newdir} (was '${cur}')"
     fi
-    [ -z "$(uci -q get aria2.main.enabled)" ] && uci -q set aria2.main.enabled='1'
+    [ "$(uci -q get aria2.main.enabled)" != "1" ] && uci -q set aria2.main.enabled='1'
     uci -q commit aria2
     # 运行用户对下载目录要有写权限
     au="$(uci -q get aria2.main.user)"
@@ -1988,7 +1992,7 @@ if [ -f /etc/config/transmission ] || uci -q show transmission >/dev/null 2>&1; 
     [ -z "$grp" ] && grp=transmission
     chown -R root:"$grp" "$cfg" 2>/dev/null
     chmod 775 "$cfg" 2>/dev/null
-    [ -z "$(uci -q get transmission.@transmission[0].enabled)" ] && \
+    [ "$(uci -q get transmission.@transmission[0].enabled)" != "1" ] && \
         uci -q set transmission.@transmission[0].enabled='1'
     uci -q commit transmission
 fi
@@ -2388,7 +2392,7 @@ if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
 # UU 加速器首启: 预置 enabled=1, 否则 procd 不会启动实例
 [ -f /etc/config/uuplugin ] || uci -q show uuplugin >/dev/null 2>&1 || exit 0
 [ -z "$(uci -q get uuplugin.uuplugin)" ] && uci -q set uuplugin.uuplugin='uuplugin'
-if [ -z "$(uci -q get uuplugin.uuplugin.enabled)" ]; then
+if [ "$(uci -q get uuplugin.uuplugin.enabled)" != "1" ]; then
     uci -q set uuplugin.uuplugin.enabled='1'
     logger -t uuplugin-init "preset enabled=1"
 fi
@@ -2401,6 +2405,74 @@ fi
 echo "[diy-part2] === UU 加速器段完成 ==="
 
 #=====================================================================================
+#=====================================================================================
+# 可道云本体: 首启从 /opt/kodbox-dist 搬到真实数据分区   [added 2026-10-10]
+#
+# 【为什么需要这一段】
+#   原来 kodbox 本体被直接投放到
+#       package/base-files/files/mnt/mmcblk1p4/kodexplorer
+#   但 /mnt/mmcblk1p4 是【真实挂载点】(eMMC 第 4 分区),
+#   镜像里放进去的目录会在分区挂载后被遮住,
+#   所以刷机后那个目录是空的 (实测 0 个文件),
+#   LuCI 里可道云打开就是 404。
+#
+# 修法:
+#    ① 构建时把本体放到非挂载路径 /opt/kodbox-dist (已改 KODBOX_DST)
+#    ② 本脚本在首启 (分区已挂载) 把它搬到
+#        <数据分区>/kodexplorer, 并修正权限与 uci 路径
+#=====================================================================================
+echo "[diy-part2] === 可道云: 生成首启搬迁脚本 ==="
+KODINST="${REPO_ROOT}/files/etc/uci-defaults/99-kodbox-install"
+if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
+    cat > "${KODINST}" <<'KODINST_EOF'
+#!/bin/sh
+#======================================================================================
+# 可道云 (kodbox) 本体安装 —— first boot
+#   镜像里的本体在 /opt/kodbox-dist (非挂载路径),
+#   这里在数据分区挂载好之后搬过去。
+#   幂等: 目标已有 index.php 就跳过 (不覆盖用户数据)。
+#======================================================================================
+SRC=/opt/kodbox-dist
+[ -d "$SRC" ] || { logger -t kodbox-install "镜像内无 $SRC, 跳过"; exit 0; }
+
+# 选数据分区
+DATA=""
+for d in /mnt/mmcblk1p4 /mnt/mmcblk2p4 /mnt/mmcblk1p3 /mnt/mmcblk2p3; do
+    [ -d "$d" ] && { DATA="$d"; break; }
+done
+[ -n "$DATA" ] || { logger -t kodbox-install "无数据分区, 跳过"; exit 0; }
+
+DST="$DATA/kodexplorer"
+if [ -f "$DST/index.php" ]; then
+    logger -t kodbox-install "$DST 已存在, 跳过安装"
+else
+    logger -t kodbox-install "从 $SRC 安装到 $DST ..."
+    mkdir -p "$DST"
+    cp -a "$SRC/." "$DST"/ 2>/dev/null
+    logger -t kodbox-install "安装完成: $(find "$DST" -type f 2>/dev/null | wc -l) 个文件"
+fi
+
+chown -R nobody:nogroup "$DST" 2>/dev/null
+chmod -R u+rwX "$DST" 2>/dev/null
+
+# uci: 指向真实路径
+[ -f /etc/config/kodexplorer ] || exit 0
+uci -q get kodexplorer.@global[0] >/dev/null 2>&1 || uci -q add kodexplorer global
+uci -q set kodexplorer.@global[0].enable='1'
+uci -q set kodexplorer.@global[0].project_directory="$DST"
+uci -q set kodexplorer.@global[0].open_basedir="$DST:/tmp"
+[ -z "$(uci -q get kodexplorer.@global[0].port)" ] && uci -q set kodexplorer.@global[0].port='8081'
+uci -q commit kodexplorer
+logger -t kodbox-install "uci 已指向 $DST"
+exit 0
+KODINST_EOF
+    chmod 0755 "${KODINST}"
+    echo "[diy-part2] 99-kodbox-install 已生成"
+else
+    echo "[diy-part2] WARNING: ${REPO_ROOT}/files/etc/uci-defaults 不存在, 跳过"
+fi
+echo "[diy-part2] === 可道云搬迁段完成 ==="
+
 # ★★★ 关键修复 (2026-10-10): 末尾重新注入 files/ ★★★
 #
 # 【为什么必须加这一段】
