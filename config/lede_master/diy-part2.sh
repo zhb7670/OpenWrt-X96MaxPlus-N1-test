@@ -2191,3 +2191,80 @@ else
     echo "[diy-part2] 可道云插件已修正 ${KOD_FIXED} 处: Referer + 官方完整包 + 默认路径"
 fi
 echo "[diy-part2] === Aria2/Transmission/可道云 段完成 ==="
+
+#=====================================================================================
+# ucitrack 缺失通用修复 —— 修「LuCI 里勾选/取消服务开关无效」   [added 2026-10-09]
+#
+# 【现象】LuCI 服务页面里勾选「已启用」保存后服务照跑、取消勾选保存后照跑,
+#         即"关不了 / 一直处于运行中"。用户最初报的 frps 就是这个。
+#
+# 【根因】LuCI 保存配置后, 依据 /usr/share/ucitrack/<app>.json 决定要重启哪个服务:
+#           { "config": "<uci配置名>", "init": "<init脚本名>" }
+#         该文件缺失 => LuCI 保存时【根本不调用】/etc/init.d/<svc> reload
+#         => 用户看到的就是"勾选无效"。
+#
+# 【真机实测】(192.168.100.1, LEDE/armsr 24.10.5)
+#   /usr/share/ucitrack/ 下只有 31 个文件, 其中【没有】transmission。
+#   反查「有 luci-app-*.json ACL + 有 /etc/init.d/<svc>」但缺 ucitrack 的:
+#     共 39 个, 含 transmission / aria2 / frpc / frps / pushbot / udp2raw /
+#     adblock / smartdns / ddns / filebrowser / ttyd / turboacc / zerotier /
+#     sqm / minidlna / rclone / vsftpd / vlmcsd / wechatpush / ... 等
+#   (注: luci-app-kodexplorer 与 luci-app-xlnetacc 有, 其余大量缺失)
+#
+#   决定性验证:
+#     uci set transmission.enabled=0 + commit  -> 进程仍在跑 (LuCI 的行为)
+#     /etc/init.d/transmission reload          -> 进程 NONE  (服务本身没问题)
+#   创建 luci-app-transmission.json 后复现 LuCI 流程:
+#     取消勾选 + reload -> 进程 NONE, running=1   ✅ 停住了
+#     重新勾选 + reload -> 进程 11177, 9091 监听  ✅ 起来了
+#
+# 【修复】构建期/首启扫描并补齐:
+#   对每个 /usr/share/rpcd/acl.d/luci-app-<X>.json, 若 /etc/init.d/<X> 存在
+#   但 /usr/share/ucitrack/luci-app-<X>.json 不存在, 则生成之。
+#
+# 回滚: 删除本段 + files/etc/uci-defaults/99-ucitrack-fill
+#=====================================================================================
+echo "[diy-part2] === ucitrack 缺失通用修复 ==="
+UTF="${REPO_ROOT}/files/etc/uci-defaults/99-ucitrack-fill"
+if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
+    cat > "${UTF}" <<'UTF_EOF'
+#!/bin/sh
+#======================================================================================
+# 为所有「有 LuCI ACL + 有 init 脚本」但缺 ucitrack 的服务补齐 ucitrack 文件
+#   (幂等, 只创建不存在的)
+#
+# 作用: 让 LuCI 保存配置后能真正触发 /etc/init.d/<svc> reload,
+#       修「勾选/取消服务开关无效、服务关不掉」。
+#======================================================================================
+
+UCITRACK_DIR=/usr/share/ucitrack
+ACL_DIR=/usr/share/rpcd/acl.d
+
+[ -d "$UCITRACK_DIR" ] || mkdir -p "$UCITRACK_DIR"
+
+ADDED=0
+for acl in "$ACL_DIR"/luci-app-*.json; do
+    [ -f "$acl" ] || continue
+    app="$(basename "$acl" .json)"        # luci-app-transmission
+    svc="${app#luci-app-}"                # transmission
+
+    # 需要 init 脚本才值得建
+    [ -x "/etc/init.d/$svc" ] || continue
+    # 已有则跳过 (不覆盖官方/用户自定义)
+    [ -f "$UCITRACK_DIR/$app.json" ] && continue
+
+    printf '[\n\t{\n\t\t"config": "%s",\n\t\t"init": "%s"\n\t}\n]\n' "$svc" "$svc" \
+        > "$UCITRACK_DIR/$app.json" 2>/dev/null && {
+        logger -t ucitrack-fill "created ucitrack for $svc"
+        ADDED=$((ADDED+1))
+    }
+done
+logger -t ucitrack-fill "filled $ADDED ucitrack file(s)"
+exit 0
+UTF_EOF
+    chmod 0755 "${UTF}"
+    echo "[diy-part2] 99-ucitrack-fill 已生成"
+else
+    echo "[diy-part2] WARNING: uci-defaults 目录不存在, 跳过"
+fi
+echo "[diy-part2] === ucitrack 段完成 ==="
