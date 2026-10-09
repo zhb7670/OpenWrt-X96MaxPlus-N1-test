@@ -2137,7 +2137,9 @@ fi
 #
 #   不依赖路径猜测: 用 find 在 feeds/package 目录里搜同名文件后再打补丁。
 #   幂等: 已含 [kodfix] 标记则跳过。
-KODFIX_PATCH='
+# 生成补丁脚本到临时文件 (用 heredoc, 避免 shell 引号嵌套问题)
+KODFIX_PY="/tmp/kodfix_patch.$$.py"
+cat > "${KODFIX_PY}" <<'KODFIX_PY_EOF'
 import io,sys,re
 p=sys.argv[1]; kind=sys.argv[2]
 s=io.open(p,encoding="utf-8",errors="replace").read()
@@ -2145,10 +2147,9 @@ orig=s
 if "[kodfix]" in s:
     print("  [kodfix] already patched:",p); raise SystemExit(3)
 if kind=="api":
-    # (a) wget_args 加 Referer + UA
-    # 注意: 原尾部无逗号, 必须补上, 否则 lua 语法错误
+    # (a) wget_args 加 Referer + UA (原尾部无逗号, 必须补上)
     s=re.sub(r'(local wget_args = \{)([^}]*?)(\s*)\}',
-             r'\1\2,\3"--referer=https://kodcloud.com/", "--user-agent=Mozilla/5.0" }  -- [kodfix] Referer required else 403',
+             r'\1\2,\3"--referer=https://kodcloud.com/", "--user-agent=Mozilla/5.0" }  -- [kodfix]',
              s, count=1)
     # (b) get_api_json 里 sys.exec 拼的 wget 也加 Referer
     s=s.replace('--timeout=10 -t 1 -O- " .. url',
@@ -2159,18 +2160,35 @@ if kind=="api":
     s=s.replace("https://github.com/kalcaddle/kodbox/archive/refs/tags/",
                 "https://static.kodcloud.com/update/download/kodbox.")
 elif kind=="settings":
-    # 默认路径改为真实数据分区 (该字段仅在首次创建时起作用)
+    # 默认路径改为真实数据分区
     s=re.sub(r'(o\.default\s*=\s*")/mnt/sda1/kodexplorer(")',
-             r'\1/mnt/mmcblk1p4/kodexplorer\2  -- [kodfix] /mnt/sda1 is a USB mount that may not exist', s)
-    # open_basedir 默认值必须含 /tmp, 否则下载/解压失败
-    s=re.sub(r'(taboption\(\s*"global"\s*,\s*DynamicList\s*,\s*"open_basedir")',
-             r'\1', s)
+             r'\1/mnt/mmcblk1p4/kodexplorer\2  -- [kodfix]', s)
 if s!=orig:
     io.open(p,"w",encoding="utf-8").write(s)
     print("  [kodfix] patched:",p)
 else:
     print("  [kodfix] no change:",p)
-'
+KODFIX_PY_EOF
+
+KOD_API_LIST="$(find "${REPO_ROOT}/feeds" "${REPO_ROOT}/package" \
+    -path '*kodexplorer/api.lua' -not -name '*.orig' -not -name '*.bak' 2>/dev/null)"
+KOD_SET_LIST="$(find "${REPO_ROOT}/feeds" "${REPO_ROOT}/package" \
+    -path '*kodexplorer/settings.lua' -not -name '*.orig' -not -name '*.bak' 2>/dev/null)"
+echo "[diy-part2] 找到 api.lua: $(echo ${KOD_API_LIST} | wc -w) 个"
+echo "[diy-part2] 找到 settings.lua: $(echo ${KOD_SET_LIST} | wc -w) 个"
+KOD_FIXED=0
+for f in ${KOD_API_LIST}; do
+    python3 "${KODFIX_PY}" "$f" api && KOD_FIXED=$((KOD_FIXED+1))
+done
+for f in ${KOD_SET_LIST}; do
+    python3 "${KODFIX_PY}" "$f" settings && KOD_FIXED=$((KOD_FIXED+1))
+done
+rm -f "${KODFIX_PY}"
+if [ "${KOD_FIXED}" = "0" ]; then
+    echo "[diy-part2] 警告: 未找到可道云插件源码文件, C2 未生效 (不影响 C1)"
+else
+    echo "[diy-part2] 可道云插件已修正 ${KOD_FIXED} 处"
+fi
 # 找出所有同名文件 (feeds 与 package 两类), 两处都打
 KOD_API_LIST="$(find "${REPO_ROOT}/feeds" "${REPO_ROOT}/package" \
     -path '*kodexplorer/api.lua' -not -name '*.orig' -not -name '*.bak' 2>/dev/null)"
