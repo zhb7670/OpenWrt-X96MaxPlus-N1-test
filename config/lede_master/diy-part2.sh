@@ -2118,44 +2118,76 @@ else
     echo "[diy-part2] WARNING: uci-defaults 目录不存在, 跳过"
 fi
 
-# ---------- C2. 修正 LuCI 可道云插件的下载逻辑 (Referer + 官方完整包) ----------
-#   插件源码来自 feeds/small, 构建期在 feeds 目录里; 同时也要改最终安装到 rootfs 的副本。
-#   两处都改, 确保无论它何时被装进镜像都生效。
-KOD_API_REL="luci-app-kodexplorer/luasrc/model/cbi/kodexplorer/api.lua"
-KOD_FIXED=0
-for base in "${REPO_ROOT}/feeds/small" "${REPO_ROOT}/package/feeds/small" \
-            "${REPO_ROOT}/build_dir/target-*/luci-app-kodexplorer"; do
-    for f in $(ls -d ${base}/${KOD_API_REL} 2>/dev/null); do
-        [ -f "$f" ] || continue
-        if ! grep -q 'Referer' "$f" 2>/dev/null; then
-            python3 - "$f" <<'PYEOF'
+# ---------- C2. 修正 LuCI 可道云插件 ----------
+#   实测确认的三处问题 (192.168.100.1):
+#     1. to_check() 硬编码返回 GitHub 源码 tag 链接:
+#          https://github.com/kalcaddle/kodbox/archive/refs/tags/1.69.03.zip
+#        这是"手动更新"按钮【真正使用】的链接 (不是 api_url 那个官方 API)。
+#        实测该源码包不能直接运行 —— 装完首页报 Class "Application" not found。
+#        正确来源: 官方 API https://api.kodcloud.com/?app=version
+#                  -> data.server.link = .../update/download/kodbox.1.69.zip (37.3 MB 完整包)
+#        实测带 Referer 下载该包并安装后: 首页 200, <title>kodbox - Powered by kodbox</title>
+#     2. wget_args 缺 Referer -> static.kodcloud.com 返回 403
+#          wget 直接下 -> 403 ; curl -e https://kodcloud.com/ -> 200 (39076343 字节)
+#        这就是界面弹「意外错误」的直接原因
+#          (version.htm: unexpectedErrorText='<%:Unexpected error%>')
+#     3. settings.lua 的 o.default = "/mnt/sda1/kodexplorer"
+#        /mnt/sda1 是外接 USB 盘挂载点, 本机没有 -> 表单会把坏路径写回 uci;
+#        Flag "enable" 无默认值 -> 每次保存页面都把 enable 写回 0 -> 服务静默不启动
+#
+#   不依赖路径猜测: 用 find 在 feeds/package 目录里搜同名文件后再打补丁。
+#   幂等: 已含 [kodfix] 标记则跳过。
+KODFIX_PATCH='
 import io,sys,re
-p=sys.argv[1]
-s=io.open(p,encoding='utf-8',errors='replace').read()
-# 1) wget_args 加 Referer (静态站要求, 否则 403)
-old_args='local wget_args = { "--no-check-certificate", "--quiet", "--timeout=10", "--tries=2" }'
-new_args=('local wget_args = { "--no-check-certificate", "--quiet", "--timeout=10", "--tries=2",\n'
-          '    "--referer=https://kodcloud.com/", "--user-agent=Mozilla/5.0" }  -- [kodfix] Referer required, else 403')
-if old_args in s:
-    s=s.replace(old_args,new_args,1)
+p=sys.argv[1]; kind=sys.argv[2]
+s=io.open(p,encoding="utf-8",errors="replace").read()
+orig=s
+if "[kodfix]" in s:
+    print("  [kodfix] already patched:",p); raise SystemExit(3)
+if kind=="api":
+    # (a) wget_args 加 Referer + UA
+    # 注意: 原尾部无逗号, 必须补上, 否则 lua 语法错误
+    s=re.sub(r'(local wget_args = \{)([^}]*?)(\s*)\}',
+             r'\1\2,\3"--referer=https://kodcloud.com/", "--user-agent=Mozilla/5.0" }  -- [kodfix] Referer required else 403',
+             s, count=1)
+    # (b) get_api_json 里 sys.exec 拼的 wget 也加 Referer
+    s=s.replace('--timeout=10 -t 1 -O- " .. url',
+                '--timeout=10 -t 1 --referer=https://kodcloud.com/ -O- " .. url')
+    # (c) 关键: 把任何 kodbox 源码 tag 链接换成官方完整发行包
+    s=re.sub(r"https://github\.com/kalcaddle/kodbox/archive/refs/tags/([0-9.]+)\.zip",
+             r"https://static.kodcloud.com/update/download/kodbox.\1.zip", s)
+    s=s.replace("https://github.com/kalcaddle/kodbox/archive/refs/tags/",
+                "https://static.kodcloud.com/update/download/kodbox.")
+elif kind=="settings":
+    # 默认路径改为真实数据分区 (该字段仅在首次创建时起作用)
+    s=re.sub(r'(o\.default\s*=\s*")/mnt/sda1/kodexplorer(")',
+             r'\1/mnt/mmcblk1p4/kodexplorer\2  -- [kodfix] /mnt/sda1 is a USB mount that may not exist', s)
+    # open_basedir 默认值必须含 /tmp, 否则下载/解压失败
+    s=re.sub(r'(taboption\(\s*"global"\s*,\s*DynamicList\s*,\s*"open_basedir")',
+             r'\1', s)
+if s!=orig:
+    io.open(p,"w",encoding="utf-8").write(s)
+    print("  [kodfix] patched:",p)
 else:
-    # 兜底: 给 wget_args 表里插一项
-    s=re.sub(r'(local wget_args = \{)', r'\1 "--referer=https://kodcloud.com/",', s, count=1)
-# 2) 兜底下载链接从 GitHub 源码tag 改为官方完整发行包
-s=s.replace('https://github.com/kalcaddle/kodbox/archive/refs/tags/1.69.03.zip',
-            'https://static.kodcloud.com/update/download/kodbox.1.69.zip')
-s=re.sub(r'https://github\.com/kalcaddle/kodbox/archive/refs/tags/([0-9.]+)\.zip',
-         r'https://static.kodcloud.com/update/download/kodbox.\1.zip', s)
-io.open(p,'w',encoding='utf-8').write(s)
-print("  [kodfix] patched:", p)
-PYEOF
-            KOD_FIXED=$((KOD_FIXED+1))
-        fi
-    done
+    print("  [kodfix] no change:",p)
+'
+# 找出所有同名文件 (feeds 与 package 两类), 两处都打
+KOD_API_LIST="$(find "${REPO_ROOT}/feeds" "${REPO_ROOT}/package" \
+    -path '*kodexplorer/api.lua' -not -name '*.orig' -not -name '*.bak' 2>/dev/null)"
+KOD_SET_LIST="$(find "${REPO_ROOT}/feeds" "${REPO_ROOT}/package" \
+    -path '*kodexplorer/settings.lua' -not -name '*.orig' -not -name '*.bak' 2>/dev/null)"
+echo "[diy-part2] 找到 api.lua: $(echo ${KOD_API_LIST} | wc -w) 个"
+echo "[diy-part2] 找到 settings.lua: $(echo ${KOD_SET_LIST} | wc -w) 个"
+KOD_FIXED=0
+for f in ${KOD_API_LIST}; do
+    python3 -c "${KODFIX_PATCH}" "$f" api && KOD_FIXED=$((KOD_FIXED+1))
+done
+for f in ${KOD_SET_LIST}; do
+    python3 -c "${KODFIX_PATCH}" "$f" settings && KOD_FIXED=$((KOD_FIXED+1))
 done
 if [ "${KOD_FIXED}" = "0" ]; then
-    echo "[diy-part2] 提示: 未找到可道云插件 api.lua (可能路径不同), 已跳过; 不影响 C1"
+    echo "[diy-part2] 警告: 未找到可道云插件源码文件, C2 未生效 (不影响 C1)"
 else
-    echo "[diy-part2] 可道云插件下载逻辑已修正 (${KOD_FIXED} 处): Referer + 官方完整包"
+    echo "[diy-part2] 可道云插件已修正 ${KOD_FIXED} 处: Referer + 官方完整包 + 默认路径"
 fi
 echo "[diy-part2] === Aria2/Transmission/可道云 段完成 ==="
