@@ -261,9 +261,20 @@ for pkg in php8 php8-fpm php8-fastcgi \
 done
 
 # ---- 2. 编译时下载 kodbox 本体并注入固件 /opt/kodexplorer (出厂即用, 重刷不丢) ----
-KODBOX_VER="1.69.03"
-KODBOX_URL="https://github.com/kalcaddle/kodbox/archive/refs/tags/${KODBOX_VER}.zip"
-KODBOX_DST="package/base-files/files/opt/kodexplorer"
+# 官方完整发行包 (37.3 MB, 含运行时文件)
+#   原值用 GitHub 源码 tag 包: https://github.com/kalcaddle/kodbox/archive/refs/tags/1.69.03.zip
+#   实测该源码包【不能直接运行】—— 装完首页报 Class "Application" not found。
+#   官方 API 给出的正确来源 (2026-10 实测):
+#     GET https://api.kodcloud.com/?app=version
+#     -> data.server.link = https://static.kodcloud.com/update/download/kodbox.1.69.zip
+#   注意: static.kodcloud.com 要求 Referer, 否则 403 (见下方 curl -e)
+KODBOX_VER="1.69"
+# 版本号保留完整形式仅供 api.lua 显示用
+KODBOX_VER_FULL="1.69.03"
+KODBOX_URL="https://static.kodcloud.com/update/download/kodbox.${KODBOX_VER}.zip"
+# 注入到数据分区挂载点 (p4 有 11G, rootfs 只有 3G)
+# 注: /mnt/mmcblk1p4 由首启 ophub 脚本创建, 此目录在固件里是挂载点
+KODBOX_DST="package/base-files/files/mnt/mmcblk1p4/kodexplorer"
 # ---- 2a. 预检: 更新 URL 必须有效 (HTTP 200)   [added 2026-10-08] ----
 #   背景: 原实现只写 "if curl ...; then ... else echo WARNING 跳过注入"。
 #         URL 一旦失效(上游删 tag/改名), 编译照样"成功", 但固件里根本没有
@@ -279,6 +290,7 @@ else
     echo "[diy-part2] WARNING: 无法从 GitHub API 获取 kodbox 最新版本, 沿用内置 ${KODBOX_VER}"
 fi
 KODBOX_HTTP="$(curl -sIL -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 40 \
+    -e "https://kodcloud.com/" -A "Mozilla/5.0" \
     "${KODBOX_URL}" 2>/dev/null)"
 if [ "${KODBOX_HTTP}" = "200" ]; then
     echo "[diy-part2] kodbox 下载链接校验通过: HTTP ${KODBOX_HTTP}"
@@ -287,10 +299,19 @@ else
     echo "[diy-part2] ERROR: 固件将不含可道云本体, UI 更新按钮也会指向失效地址"
 fi
 echo "[diy-part2] === 可道云: 注入 kodbox ${KODBOX_VER} ==="
-if curl -fsSL -o /tmp/kodbox.zip "${KODBOX_URL}"; then
+# -e 加 Referer: static.kodcloud.com 无 Referer 会返回 403 Forbidden
+if curl -fsSL -e "https://kodcloud.com/" -A "Mozilla/5.0" \
+        --connect-timeout 20 --max-time 300 \
+        -o /tmp/kodbox.zip "${KODBOX_URL}"; then
     rm -rf /tmp/kodx && mkdir -p /tmp/kodx "$KODBOX_DST"
     unzip -q -o /tmp/kodbox.zip -d /tmp/kodx
-    cp -rf "/tmp/kodx/kodbox-${KODBOX_VER}/." "$KODBOX_DST/"
+    # 官方 zip 解压后直接是 app/ config/ ... (无 kodbox-<ver>/ 外层)
+    # GitHub 源码包解压后才有 kodbox-<ver>/ 外层, 两种都兼容:
+    if [ -d "/tmp/kodx/kodbox-${KODBOX_VER}" ]; then
+        cp -rf "/tmp/kodx/kodbox-${KODBOX_VER}/." "$KODBOX_DST/"
+    else
+        cp -rf /tmp/kodx/. "$KODBOX_DST/"
+    fi
     rm -rf /tmp/kodbox.zip /tmp/kodx
 
     # ---- 2b. 剔除宿主架构(x86_64) ELF 可执行文件   [added 2026-10-08] ----
@@ -2098,16 +2119,29 @@ if [ -f /etc/config/kodexplorer ] || uci -q show kodexplorer >/dev/null 2>&1; th
         uci -q set kodexplorer.@global[0].enable='1'
     # project_directory 默认是 /tmp/kodexplorer (tmpfs), 改到真实路径
     pd="$(uci -q get kodexplorer.@global[0].project_directory)"
+    # 项目目录固定在数据分区 p4 (11G), 不再用 rootfs 的 /opt (仅 3G)
+    KOD_NEW="/mnt/mmcblk1p4/kodexplorer"
     case "$pd" in
-        ""|/tmp/*) uci -q set kodexplorer.@global[0].project_directory='/opt/kodexplorer' ;;
+        ""|/tmp/*|/opt/kodexplorer) uci -q set kodexplorer.@global[0].project_directory="$KOD_NEW" ;;
     esac
     [ -z "$(uci -q get kodexplorer.@global[0].port)" ] && \
         uci -q set kodexplorer.@global[0].port='8081'
     [ -z "$(uci -q get kodexplorer.@global[0].open_basedir)" ] && \
-        uci -q set kodexplorer.@global[0].open_basedir='/opt/kodexplorer:/tmp'
+        uci -q set kodexplorer.@global[0].open_basedir="${KOD_NEW}:/tmp"
     uci -q commit kodexplorer
     # php-fpm 以 nobody 运行, 程序目录需可写
-    [ -d /opt/kodexplorer ] && chown -R nobody:nogroup /opt/kodexplorer 2>/dev/null
+    # php-fpm 以 nobody 运行, 程序目录需可写
+    [ -d "${KOD_NEW}" ] && chown -R nobody:nogroup "${KOD_NEW}" 2>/dev/null
+    # 程序缺失时记一条日志便于排查 (固件里应已注入)
+    [ -f "${KOD_NEW}/index.php" ] || \
+        logger -t kodexplorer-init "WARNING: ${KOD_NEW}/index.php missing (p4 not mounted?)"
+
+    # 清掉可能残留的重复实例 (php-fpm 会因 sock 被占用而 "Another FPM instance")
+    /etc/init.d/kodexplorer stop >/dev/null 2>&1
+    killall -9 php8-fpm nginx 2>/dev/null
+    sleep 1
+    rm -rf /var/etc/kodexplorer
+    /etc/init.d/kodexplorer start >/dev/null 2>&1
 fi
 
 exit 0
