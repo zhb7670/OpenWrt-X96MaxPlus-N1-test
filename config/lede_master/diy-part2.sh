@@ -100,6 +100,7 @@ CONFIG_PACKAGE_smartdns=y
 CONFIG_PACKAGE_smartdns-ui=y
 CONFIG_PACKAGE_luci-app-xlnetacc=y
 CONFIG_PACKAGE_luci-app-watchcat=y
+CONFIG_PACKAGE_luci-app-UUGameAcc=y
 CONFIG_PACKAGE_luci-app-udpxy=y
 CONFIG_PACKAGE_luci-app-airconnect=y
 CONFIG_PACKAGE_luci-app-ocserv=y
@@ -2200,3 +2201,181 @@ else
 fi
 echo "[diy-part2] === service_triggers 段完成 ==="
 
+#=====================================================================================
+# UU 游戏加速器 (UU GameAcc / uuplugin) —— aarch64 二进制 + procd 化修复
+#                                                    [added 2026-10-10]
+#
+# 【背景】本插件此前在 LuCI 界面无法正常开关, 经真机排查确认有 3 个独立缺陷。
+#
+# ── 缺陷1: 内嵌二进制是 x86_64, 在 aarch64 上无法执行 ──
+#   实测: /usr/bin/uuplugin/uuplugin -> "Exec format error"
+#         strings ... | grep -c x86_64  -> 15
+#   而 luci-app-UUGameAcc 的 Architecture: all (只是 LuCI 壳, 不含二进制)
+#   为什么"看起来在跑": 原 init 用
+#         /usr/bin/uuplugin/uuplugin >/dev/null 2>&1 &
+#   后台启动 + 丢弃 stderr, Exec format error 被吞掉 -> LuCI 仍显示"已启用"。
+#   修复: 构建期从 ttc0419/uuplugin 拉 aarch64 包替换。
+#     来源 https://github.com/ttc0419/uuplugin/releases/download/latest/
+#              uuplugin_latest_aarch64_cortex-a53.ipk   (aarch64_generic 归属 cortex-a53)
+#     实测替换后: x86_64 特征=0, 二进制可执行, version v12.1.18
+#
+# ── 缺陷2: xtables-nft-multi 必须放两个路径 ──
+#   uuplugin 实际调用 /usr/bin/uuplugin/xtables-nft-multi (子目录那份),
+#   而包内放在 /usr/bin/xtables-nft-multi。只放一处 -> nft 规则建不起来。
+#
+# ── 缺陷3 (核心): init 脚本不是 procd 服务, 界面开关完全无效 ──
+#   LuCI「保存并应用」的完整链路:
+#     uci.js apply() -> ubus call uci apply -> ubus call uci reload_config
+#                                            -> 发 procd "config.change" 事件
+#                                            -> 只有声明了 service_triggers 的服务响应
+#   而原 /etc/init.d/uuplugin_luci 没有 USE_PROCD=1:
+#     - service_triggers() 里的 procd_add_reload_trigger 不会注册 (写了也是摆设)
+#     - /etc/init.d/ucitrack 的源码明确只给【非 procd】脚本注册:
+#         ! grep -sqE 'USE_PROCD=.' "$init" && procd_add_config_trigger ...
+#       但它实测没给 uuplugin_luci 注册 (ubus call service list -> ucitrack: {})
+#   实测: enabled=0 + ubus call uci reload_config -> 进程仍为 2   (✗ 界面无效)
+#   对照 transmission 补了 service_triggers 后: 同样操作 -> 进程 NONE (✓)
+#   修复: 把 init 改写为 procd 服务 (USE_PROCD=1 + start_service/stop_service
+#         + service_triggers), 实测界面开关生效。
+#
+#   !! 关键坑: 不要在 start_service 里加 is_running 守卫 !!
+#      首次实现加了 `pgrep -f "^$UU_BIN"` 防重复启动, 结果 procd 误判
+#      "already running, skip start" 而不注册实例 -> nft 规则不建 (表数 0)。
+#      去掉守卫后: 进程 2 个, nft 表 6 张。
+#
+# 真机验证 (192.168.100.1, LEDE/armsr 24.10.5, aarch64_generic):
+#   二进制 x86_64 特征=0, version v12.1.18
+#   procd 实例 instance1 running=True
+#   nft: table ip/ip6 XU_ACC_MAIN_{filter,mangle,nat} 共 6 张
+#   界面开关: enabled=0 + reload_config -> 进程 0 ; enabled=1 -> 进程 2 + 表 6
+#
+# 注意: UU 加速器是【付费服务】, 需 UU 手机 App 登录 + 绑定本机。
+#       "进程在跑 + nft 表建好" != "真的在加速"。
+#       另外它的 stop 原用 kill -9 `pgrep -f "/usr/bin/uuplugin/uuplugin"`,
+#       模式过宽会连 ssh 会话一起杀 -> 已改为 killall -9 uuplugin。
+#
+# 回滚: 删除本段 + 上面 CONFIG_PACKAGE_luci-app-UUGameAcc=y 行
+#=====================================================================================
+echo "[diy-part2] === UU 加速器: aarch64 二进制 + procd 化 ==="
+UU_VER="latest"
+UU_ARCH="aarch64_cortex-a53"
+UU_URL="https://github.com/ttc0419/uuplugin/releases/download/${UU_VER}/uuplugin_${UU_VER}_${UU_ARCH}.ipk"
+UU_DST="package/base-files/files"
+
+UU_HTTP="$(curl -sIL -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 40 "${UU_URL}" 2>/dev/null)"
+if [ "${UU_HTTP}" = "200" ]; then
+    echo "[diy-part2] UU 包链接校验通过: HTTP ${UU_HTTP}"
+else
+    echo "[diy-part2] ERROR: UU 包链接无效 HTTP='${UU_HTTP}' URL=${UU_URL}"
+    echo "[diy-part2] ERROR: 固件将保留不可用的 x86_64 uuplugin"
+fi
+
+if curl -fsSL --connect-timeout 20 --max-time 300 -o /tmp/uuplugin.ipk "${UU_URL}"; then
+    rm -rf /tmp/uux && mkdir -p /tmp/uux/a /tmp/uux/d
+    ( cd /tmp/uux/a && tar -xzf /tmp/uuplugin.ipk 2>/dev/null )
+    if [ -f /tmp/uux/a/data.tar.gz ]; then
+        tar -xzf /tmp/uux/a/data.tar.gz -C /tmp/uux/d 2>/dev/null
+        UU_BIN="$(find /tmp/uux/d -name uuplugin -type f | head -1)"
+        UU_XT="$(find /tmp/uux/d -name xtables-nft-multi -type f | head -1)"
+        UU_CONF="$(find /tmp/uux/d -name uu.conf -type f | head -1)"
+
+        if [ -n "${UU_BIN}" ]; then
+            # 先删旧的 x86_64 (base-files 收尾的依赖检查会对 x86_64 ELF 报
+            # "missing dependencies for libraries" -> 编译失败, 与 kodbox 同因)
+            rm -rf "${UU_DST}/usr/bin/uuplugin"
+            mkdir -p "${UU_DST}/usr/bin/uuplugin"
+            cp -f "${UU_BIN}" "${UU_DST}/usr/bin/uuplugin/uuplugin"
+            chmod 0755 "${UU_DST}/usr/bin/uuplugin/uuplugin"
+
+            if [ -n "${UU_XT}" ]; then
+                cp -f "${UU_XT}" "${UU_DST}/usr/bin/xtables-nft-multi"
+                chmod 0755 "${UU_DST}/usr/bin/xtables-nft-multi"
+                cp -f "${UU_XT}" "${UU_DST}/usr/bin/uuplugin/xtables-nft-multi"
+                chmod 0755 "${UU_DST}/usr/bin/uuplugin/xtables-nft-multi"
+            fi
+            [ -n "${UU_CONF}" ] && cp -f "${UU_CONF}" "${UU_DST}/usr/bin/uuplugin/uu.conf"
+
+            X86N="$(strings "${UU_DST}/usr/bin/uuplugin/uuplugin" 2>/dev/null | grep -c x86_64)"
+            echo "[diy-part2] UU uuplugin 已替换, x86_64 特征数=${X86N} (期望 0)"
+        else
+            echo "[diy-part2] WARNING: UU 包内未找到 uuplugin 二进制"
+        fi
+    fi
+    rm -rf /tmp/uux /tmp/uuplugin.ipk
+else
+    echo "[diy-part2] WARNING: UU 包下载失败, 保留原 x86_64 版本"
+fi
+
+# ---- procd 化 init 脚本 (核心修复: 让界面开关生效) ----
+UU_INIT="${REPO_ROOT}/files/etc/init.d/uuplugin_luci"
+if [ -d "${REPO_ROOT}/files/etc" ]; then
+    mkdir -p "${REPO_ROOT}/files/etc/init.d"
+    cat > "${UU_INIT}" <<'UUINIT_EOF'
+#!/bin/sh /etc/rc.common
+#
+# UU GameAcc (uuplugin) —— procd 服务版本  [generated by diy-part2.sh]
+#
+# 原版没有 USE_PROCD=1, 导致:
+#   - service_triggers() 不生效 -> LuCI「保存并应用」后无人响应 -> 界面开关无效
+#   - ucitrack 的 config.change 机制实测也没给它注册
+# 改为 procd 服务后 service_triggers 生效, 界面勾选可正常启停。
+#
+# 注意: 不要在 start_service 里加"已在运行则跳过"的守卫 ——
+#       实测会导致 procd 误判而不注册实例, 连带 nft 规则不建立。
+START=90
+STOP=15
+USE_PROCD=1
+
+UU_BIN=/usr/bin/uuplugin/uuplugin
+
+start_service() {
+	config_load uuplugin
+	local enable
+	config_get_bool enable uuplugin enabled
+
+	if [ "$enable" -eq 0 ]; then
+		killall -9 uuplugin 2>/dev/null
+		return 0
+	fi
+
+	procd_open_instance
+	procd_set_param command "$UU_BIN"
+	procd_set_param respawn 3600 5 10
+	procd_set_param stdout 0
+	procd_set_param stderr 0
+	procd_close_instance
+}
+
+stop_service() {
+	killall -9 uuplugin 2>/dev/null
+	sleep 1
+	return 0
+}
+
+service_triggers() {
+	procd_add_reload_trigger "uuplugin"
+}
+UUINIT_EOF
+    chmod 0755 "${UU_INIT}"
+    echo "[diy-part2] uuplugin_luci (procd 版) 已生成: ${UU_INIT}"
+fi
+
+# ---- 首启: enabled=1 预置 (否则 procd 不启动) ----
+UU_UCIDEF="${REPO_ROOT}/files/etc/uci-defaults/99-uuplugin-enable"
+if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
+    cat > "${UU_UCIDEF}" <<'UUUCI_EOF'
+#!/bin/sh
+# UU 加速器首启: 预置 enabled=1, 否则 procd 不会启动实例
+[ -f /etc/config/uuplugin ] || uci -q show uuplugin >/dev/null 2>&1 || exit 0
+[ -z "$(uci -q get uuplugin.uuplugin)" ] && uci -q set uuplugin.uuplugin='uuplugin'
+if [ -z "$(uci -q get uuplugin.uuplugin.enabled)" ]; then
+    uci -q set uuplugin.uuplugin.enabled='1'
+    logger -t uuplugin-init "preset enabled=1"
+fi
+uci -q commit uuplugin
+exit 0
+UUUCI_EOF
+    chmod 0755 "${UU_UCIDEF}"
+    echo "[diy-part2] 99-uuplugin-enable 已生成"
+fi
+echo "[diy-part2] === UU 加速器段完成 ==="
