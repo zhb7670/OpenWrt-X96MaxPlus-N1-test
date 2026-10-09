@@ -2193,78 +2193,94 @@ fi
 echo "[diy-part2] === Aria2/Transmission/可道云 段完成 ==="
 
 #=====================================================================================
-# ucitrack 缺失通用修复 —— 修「LuCI 里勾选/取消服务开关无效」   [added 2026-10-09]
+# service_triggers 缺失修复 —— 修「LuCI 里勾选/取消服务开关无效、服务关不掉」
+#                                    [added 2026-10-09]
 #
-# 【现象】LuCI 服务页面里勾选「已启用」保存后服务照跑、取消勾选保存后照跑,
-#         即"关不了 / 一直处于运行中"。用户最初报的 frps 就是这个。
+# 【现象】LuCI 服务页面勾选「已启用」保存后服务照跑; 取消勾选保存后也照跑。
+#         即"一直处于运行中、关不了"(用户最早报的 frps 就是这个)。
 #
-# 【根因】LuCI 保存配置后, 依据 /usr/share/ucitrack/<app>.json 决定要重启哪个服务:
-#           { "config": "<uci配置名>", "init": "<init脚本名>" }
-#         该文件缺失 => LuCI 保存时【根本不调用】/etc/init.d/<svc> reload
-#         => 用户看到的就是"勾选无效"。
+# 【根因】现代 OpenWrt 用 procd 事件机制, 不是老的 ucitrack:
+#   保存配置 -> /sbin/reload_config 对比 md5, 对变化的 config 执行
+#       ubus call service event '{"type":"config.change","data":{"package":"<cfg>"}}'
+#   procd 收到后, 只重启【声明了 service_triggers】的服务:
+#       service_triggers() { procd_add_reload_trigger "<cfg>" }
+#   缺这个函数 => 事件无人接收 => 服务状态不变。
+#
+#   注: 曾误判为缺 ucitrack 文件而批量补了 38 个, 实测【无效】——
+#       现代 LuCI/procd 不读 ucitrack。此处为修正后的正解。
 #
 # 【真机实测】(192.168.100.1, LEDE/armsr 24.10.5)
-#   /usr/share/ucitrack/ 下只有 31 个文件, 其中【没有】transmission。
-#   反查「有 luci-app-*.json ACL + 有 /etc/init.d/<svc>」但缺 ucitrack 的:
-#     共 39 个, 含 transmission / aria2 / frpc / frps / pushbot / udp2raw /
-#     adblock / smartdns / ddns / filebrowser / ttyd / turboacc / zerotier /
-#     sqm / minidlna / rclone / vsftpd / vlmcsd / wechatpush / ... 等
-#   (注: luci-app-kodexplorer 与 luci-app-xlnetacc 有, 其余大量缺失)
+#   /etc/init.d/transmission 用 USE_PROCD=1, 但全文无 service_triggers。
+#   决定性验证 (发 config.change 事件, 即 LuCI 保存时做的):
+#     补该函数前: enabled=0 + commit + 事件 -> 进程仍在跑 (12507)   ✗
+#     补该函数后: enabled=0 + commit + 事件 -> 进程 NONE, running=1  ✓ 停住
+#                 enabled=1 + commit + 事件 -> 进程 14077, 9091 监听 ✓ 起来
 #
-#   决定性验证:
-#     uci set transmission.enabled=0 + commit  -> 进程仍在跑 (LuCI 的行为)
-#     /etc/init.d/transmission reload          -> 进程 NONE  (服务本身没问题)
-#   创建 luci-app-transmission.json 后复现 LuCI 流程:
-#     取消勾选 + reload -> 进程 NONE, running=1   ✅ 停住了
-#     重新勾选 + reload -> 进程 11177, 9091 监听  ✅ 起来了
+#   全量统计: 81 个 procd 服务里, 16 个缺 service_triggers, 其中有 init 脚本
+#   且在 LuCI 里有服务开关页面的:
+#     transmission / nginx / ocserv / openclash / tailscale / tinyproxy /
+#     xl2tpd / wpad
+#   (其余 acpid/rpcbind/rpcd/urngd 等属系统服务, 无 LuCI 开关, 不需要)
 #
-# 【修复】构建期/首启扫描并补齐:
-#   对每个 /usr/share/rpcd/acl.d/luci-app-<X>.json, 若 /etc/init.d/<X> 存在
-#   但 /usr/share/ucitrack/luci-app-<X>.json 不存在, 则生成之。
+# 【修复】首启脚本: 对上述服务, 若其 init 脚本无 service_triggers 则追加:
+#     service_triggers() { procd_add_reload_trigger "<服务名>" }
+#   幂等 (已含则跳过), 非破坏 (先备份), 追加后立即重启该服务使触发器注册。
 #
-# 回滚: 删除本段 + files/etc/uci-defaults/99-ucitrack-fill
+# 回滚: 删除本段 + files/etc/uci-defaults/99-service-triggers-fill
 #=====================================================================================
-echo "[diy-part2] === ucitrack 缺失通用修复 ==="
-UTF="${REPO_ROOT}/files/etc/uci-defaults/99-ucitrack-fill"
+echo "[diy-part2] === service_triggers 缺失修复 ==="
+STF="${REPO_ROOT}/files/etc/uci-defaults/99-service-triggers-fill"
 if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
-    cat > "${UTF}" <<'UTF_EOF'
+    cat > "${STF}" <<'STF_EOF'
 #!/bin/sh
 #======================================================================================
-# 为所有「有 LuCI ACL + 有 init 脚本」但缺 ucitrack 的服务补齐 ucitrack 文件
-#   (幂等, 只创建不存在的)
+# 为缺 service_triggers 的服务补上, 修「LuCI 服务开关无效 / 关不掉」
+#   (幂等, 先备份, 非破坏)
 #
-# 作用: 让 LuCI 保存配置后能真正触发 /etc/init.d/<svc> reload,
-#       修「勾选/取消服务开关无效、服务关不掉」。
+# 原理: /sbin/reload_config 在配置变更时发 procd config.change 事件;
+#       只有声明了 service_triggers 的服务才会响应并重启。
 #======================================================================================
 
-UCITRACK_DIR=/usr/share/ucitrack
-ACL_DIR=/usr/share/rpcd/acl.d
+# 需要修的服务 (有 LuCI 服务开关页面 + 用 procd 但缺 triggers)
+SERVICES="transmission nginx ocserv openclash tailscale tinyproxy xl2tpd wpad"
 
-[ -d "$UCITRACK_DIR" ] || mkdir -p "$UCITRACK_DIR"
+FIXED=0
+for svc in $SERVICES; do
+    f="/etc/init.d/$svc"
+    [ -f "$f" ] || continue
+    # 只用 procd 的服务才适用
+    grep -q 'USE_PROCD' "$f" 2>/dev/null || continue
+    # 已有则跳过
+    grep -q 'service_triggers' "$f" 2>/dev/null && continue
 
-ADDED=0
-for acl in "$ACL_DIR"/luci-app-*.json; do
-    [ -f "$acl" ] || continue
-    app="$(basename "$acl" .json)"        # luci-app-transmission
-    svc="${app#luci-app-}"                # transmission
+    # 备份 (只备份一次)
+    [ -f "$f.orig-triggers" ] || cp -f "$f" "$f.orig-triggers" 2>/dev/null
 
-    # 需要 init 脚本才值得建
-    [ -x "/etc/init.d/$svc" ] || continue
-    # 已有则跳过 (不覆盖官方/用户自定义)
-    [ -f "$UCITRACK_DIR/$app.json" ] && continue
+    cat >> "$f" <<EOF
 
-    printf '[\n\t{\n\t\t"config": "%s",\n\t\t"init": "%s"\n\t}\n]\n' "$svc" "$svc" \
-        > "$UCITRACK_DIR/$app.json" 2>/dev/null && {
-        logger -t ucitrack-fill "created ucitrack for $svc"
-        ADDED=$((ADDED+1))
-    }
+service_triggers() {
+	procd_add_reload_trigger "$svc"
+}
+EOF
+
+    # 语法自检: 失败则回滚
+    if sh -n "$f" 2>/dev/null; then
+        logger -t service-triggers-fill "added service_triggers to $svc"
+        FIXED=$((FIXED+1))
+        # 重启使其注册触发器
+        /etc/init.d/$svc restart >/dev/null 2>&1
+    else
+        [ -f "$f.orig-triggers" ] && cp -f "$f.orig-triggers" "$f"
+        logger -t service-triggers-fill "ERROR: $svc syntax check failed, rolled back"
+    fi
 done
-logger -t ucitrack-fill "filled $ADDED ucitrack file(s)"
+logger -t service-triggers-fill "fixed $FIXED service(s)"
 exit 0
-UTF_EOF
-    chmod 0755 "${UTF}"
-    echo "[diy-part2] 99-ucitrack-fill 已生成"
+STF_EOF
+    chmod 0755 "${STF}"
+    echo "[diy-part2] 99-service-triggers-fill 已生成"
 else
     echo "[diy-part2] WARNING: uci-defaults 目录不存在, 跳过"
 fi
-echo "[diy-part2] === ucitrack 段完成 ==="
+echo "[diy-part2] === service_triggers 段完成 ==="
+
