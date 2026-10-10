@@ -2,8 +2,6 @@ name: ARMv8 Plus OpenWrt
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: 0 20 * * *
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
@@ -252,8 +250,9 @@ jobs:
         PACKAGE_SOC: s905x3_s905d   # 只出 X96 Max+ (s905x3_multi) 和 斐讯 N1 (s905d_n1)
         WHOAMI: zhb7670
         KERNEL_REPO_URL: ophub/kernel
-        KERNEL_VERSION_NAME: 6.1.y
-        KERNEL_AUTO_LATEST: true
+        # 精确内核 6.18.54（不带 o）: 必须 AUTO_LATEST=false，否则会被自动升到 6.18.55
+        KERNEL_VERSION_NAME: 6.18.54
+        KERNEL_AUTO_LATEST: false
         DISTRIB_REVISION: R${{ env.DATE1 }} by zhb7670
 
     - name: Upload OpenWrt To Artifact

@@ -58,10 +58,6 @@ on:
         description: "Builder signature"
         required: false
         default: "zhb7670"
-  schedule:
-    # 每周一 03:00 UTC 自动检查上游更新
-    - cron: "0 3 * * 1"
-
 env:
   TZ: Etc/UTC
   IMAGEBUILDER_SH: config/imagebuilder/imagebuilder.sh
