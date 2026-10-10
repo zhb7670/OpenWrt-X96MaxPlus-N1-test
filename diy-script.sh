@@ -60,9 +60,13 @@ cp -f $GITHUB_WORKSPACE/images/bg1.jpg package/luci-theme-argon/htdocs/luci-stat
 
 # 晶晨宝盒
 git_sparse_clone main https://github.com/ophub/luci-app-amlogic luci-app-amlogic
-sed -i "s|firmware_repo.*|firmware_repo 'https://github.com/haiibo/OpenWrt'|g" package/luci-app-amlogic/root/etc/config/amlogic
-# sed -i "s|kernel_path.*|kernel_path 'https://github.com/ophub/kernel'|g" package/luci-app-amlogic/root/etc/config/amlogic
-sed -i "s|ARMv8|ARMv8_PLUS|g" package/luci-app-amlogic/root/etc/config/amlogic
+# [SA] 晶晨宝盒固件源指向本仓库。
+#      注意 amlogic_check_firmware.sh 内部会拼 "https://github.com/${amlogic_firmware_repo}/releases",
+#      所以这里必须是 owner/repo 形式, 不能带 https:// 前缀
+#      (haiibo 原写法写入完整 URL, 会拼成 https://github.com/https://github.com/... 而失效)。
+sed -i "s|amlogic_firmware_repo.*|amlogic_firmware_repo 'zhb7670/OpenWrt-X96MaxPlus-N1-test'|g" package/luci-app-amlogic/root/etc/config/amlogic
+sed -i "s|amlogic_firmware_tag.*|amlogic_firmware_tag 'ARMv8_X96MAX'|g" package/luci-app-amlogic/root/etc/config/amlogic
+# sed -i "s|amlogic_kernel_path.*|amlogic_kernel_path 'https://github.com/ophub/kernel'|g" package/luci-app-amlogic/root/etc/config/amlogic
 
 # SmartDNS
 git clone --depth=1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
