@@ -137,3 +137,22 @@ find package/luci-theme-*/* -type f -name '*luci-theme-*' -print -exec sed -i '/
 
 ./scripts/feeds update -a
 ./scripts/feeds install -a
+
+
+# ===== [2026-10-10] frp 0.70.1 编译补丁 (frp-patch) =====
+# 上游 frp 0.70.1 删掉了 web 目录里的 npm "build" 脚本, 而 lede feed 的 Makefile
+# 仍在执行 `npm --workspace=frpc run build` -> npm ERR! missing script: build -> 编译失败.
+# 这里跳过 Web 界面构建, 只编 Go 主程序: frpc/frps 命令行+配置文件功能完整,
+# 仅失去 Web 管理页 (dashboard). 
+FRP_MK="feeds/packages/net/frp/Makefile"
+if [ -f "$FRP_MK" ]; then
+    cp -f "$FRP_MK" /tmp/frp.Makefile.bak 2>/dev/null
+    sed -i '/PKG_BUILD_DIR)\/web/d' "$FRP_MK"
+    sed -i '/npm install/d' "$FRP_MK"
+    sed -i '/npm --workspace=frpc run build/d' "$FRP_MK"
+    sed -i '/npm --workspace=frps run build/d' "$FRP_MK"
+    sed -i 's|PKG_BUILD_DEPENDS:=golang/host node/host|PKG_BUILD_DEPENDS:=golang/host|' "$FRP_MK"
+    echo "==> [frp-patch] 已跳过 Web 界面构建, 当前 Build/Compile:"
+    sed -n '/define Build\/Compile/,/^endef/p' "$FRP_MK" | sed 's/^/    /'
+fi
+# ===== frp 补丁结束 =====
