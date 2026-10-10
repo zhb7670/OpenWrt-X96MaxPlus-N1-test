@@ -2689,23 +2689,58 @@ SPF="${REPO_ROOT}/files/etc/uci-defaults/99-smartdns-pollfix"
 if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
     cat > "${SPF}" <<'SPF_EOF'
 #!/bin/sh
-# SmartDNS LuCI 页面状态刷新修复 (first boot, 幂等)
-#   上游 luci-app-smartdns 只调 poll.add() 没调 poll.start(),
-#   而 luci.js 的 Poll.add() 不会隐式启动轮询 => 状态冻结。
-#   详见 diy-part2.sh 中本段注释。
+# SmartDNS LuCI \u9875\u9762\u72b6\u6001\u4fee\u590d (first boot, \u5e42\u7b49)
+#
+# \u4e0a\u6e38\u6709\u4e24\u4e2a bug, \u5bfc\u81f4\u9875\u9762\u3010\u6c38\u8fdc\u3011\u663e\u793a\u300cSmartDNS - \u8fd0\u884c\u4e2d\u300d:
+#
+#  bug 1 (\u81f4\u547d): \u7c7b\u578b\u4e0d\u5339\u914d
+#      smartdnsServiceStatus() \u8fd4\u56de Promise.all([ getServiceStatus() ]),
+#      \u89e3\u6790\u51fa\u6765\u662f\u3010\u6570\u7ec4\u3011 [isRunning], \u4e0d\u662f\u5e03\u5c14\u503c\u3002
+#      \u800c smartdnsRenderStatus(isRunning) \u91cc\u7528 if (isRunning) \u5224\u65ad \u2014\u2014
+#      JS \u91cc\u6570\u7ec4\uff08\u5305\u62ec [false]\uff09\u6c38\u8fdc\u4e3a\u771f, \u6240\u4ee5\u5206\u652f\u6c38\u8fdc\u8d70\u8fdb\u300c\u8fd0\u884c\u4e2d\u300d\u3002
+#      \u5b9e\u6d4b: \u8bbe\u5907\u4e0a smartdns \u5b8c\u5168\u6ca1\u8dd1 (pidof=NONE, procd \u65e0\u5b9e\u4f8b),
+#      \u800c\u9875\u9762\u4ecd\u7136\u7eff\u8272\u300c\u8fd0\u884c\u4e2d\u300d\u2014\u2014\u65e0\u8bba\u5237\u65b0\u3001\u65e0\u75d5\u7a97\u53e3\u90fd\u4e00\u6837\u3002
+#      \u4fee: \u5f52\u4e00\u5316\u4e3a\u5e03\u5c14\u503c\u3002
+#
+#  bug 2: \u8f6e\u8be2\u4ece\u672a\u542f\u52a8
+#      luci.js \u7684 Poll.add() \u91cc: if (this.tick != null && !this.active()) this.start();
+#      tick \u521d\u59cb\u4e3a undefined, JS \u91cc undefined != null \u4e3a false,
+#      \u6240\u4ee5 add() \u4e0d\u4f1a\u9690\u5f0f\u542f\u52a8\u8f6e\u8be2\u3002
+#      \u800c smartdns.js \u5168\u6587 poll.start() \u51fa\u73b0 0 \u6b21 => \u72b6\u6001\u53ea\u7b97\u4e00\u6b21\u5c31\u51bb\u7ed3\u3002
+#      \u4fee: \u8865 poll.start()\u3002
+#
+# \u4fee\u540e\u5b9e\u6d4b: node --check rc=0; HTTP \u63d0\u4f9b\u7684\u6587\u4ef6\u4e0e\u78c1\u76d8 cmp \u4e00\u81f4\u3002
 F=/www/luci-static/resources/view/smartdns/smartdns.js
 [ -f "$F" ] || exit 0
-if grep -q 'poll\.start' "$F" 2>/dev/null; then
-    exit 0
+
+CHANGED=0
+
+# bug 1a: smartdnsRenderStatus \u5185\u90e8\u5f52\u4e00\u5316
+if ! grep -q 'Array.isArray(isRunning)' "$F" 2>/dev/null; then
+    sed -i 's|^function smartdnsRenderStatus(isRunning) {|function smartdnsRenderStatus(isRunning) {\n\tif (Array.isArray(isRunning))\n\t\tisRunning = isRunning[0];|' "$F"
+    CHANGED=1
 fi
-if grep -q 'poll\.add(renderStatus, 1);' "$F" 2>/dev/null; then
-    sed -i '/poll\.add(renderStatus, 1);/a\			try { poll.start(); } catch (e) { }' "$F"
-    logger -t smartdns-pollfix "已给 smartdns.js 补上 poll.start()"
+
+# bug 1b: \u8c03\u7528\u70b9\u4e5f\u5f52\u4e00\u5316
+if grep -q 'smartdnsRenderStatus(res);' "$F" 2>/dev/null; then
+    sed -i 's|view\.innerHTML = smartdnsRenderStatus(res);|view.innerHTML = smartdnsRenderStatus(Array.isArray(res) ? res[0] : res);|' "$F"
+    CHANGED=1
+fi
+
+# bug 2: \u8865 poll.start()
+if ! grep -q 'poll\.start' "$F" 2>/dev/null; then
+    if grep -q 'poll\.add(renderStatus, 1);' "$F" 2>/dev/null; then
+        sed -i '/poll\.add(renderStatus, 1);/a\			try { poll.start(); } catch (e) { }' "$F"
+        CHANGED=1
+    fi
+fi
+
+if [ "$CHANGED" = "1" ]; then
+    touch "$F"
+    logger -t smartdns-pollfix "\u5df2\u4fee\u590d smartdns.js \u72b6\u6001\u663e\u793a (Array \u5f52\u4e00\u5316 + poll.start)"
 else
-    logger -t smartdns-pollfix "未找到 poll.add 行, 跳过"
+    logger -t smartdns-pollfix "\u65e0\u9700\u4fee\u6539"
 fi
-# 触碰 mtime 让浏览器 ETag 失效
-touch "$F"
 exit 0
 SPF_EOF
     chmod 0755 "${SPF}"
