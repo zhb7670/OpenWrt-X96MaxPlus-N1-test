@@ -207,6 +207,42 @@ CONFIG_PACKAGE_luci-app-nlbwmon=y
 # 参考机 192.168.1.60 已装, 本仓库此前遗漏, 补齐
 CONFIG_PACKAGE_luci-i18n-alist-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-filebrowser-zh-cn=y
+
+# ==================== X96MaxPlus-N1 : 补齐目标插件 [added 2026-10-11] ====================
+# 依据: 最近成功 release (2026.10.09-1750) 的 output config 与目标 84 项逐项对比。
+# 原则: 只选「上游 feed 里真实存在 + 依赖在 armsr/armv8 上可满足 + 不引入目标编译内核模块」的项。
+# 说明: luci-app-* 依赖的主程序(feed 里的 DEPENDS)在此一并显式打开,
+#       否则 make defconfig 会因依赖不满足而把 luci-app 丢弃(历史踩坑: adblock / smartdns / udp2raw)。
+# --- 网络 / 多拨 ---
+CONFIG_PACKAGE_luci-app-mwan3=y
+CONFIG_PACKAGE_mwan3=y
+CONFIG_PACKAGE_luci-app-mwan3helper=y
+CONFIG_PACKAGE_pdnsd-alt=y
+CONFIG_PACKAGE_luci-app-syncdial=y
+# --- 状态监控 ---
+CONFIG_PACKAGE_luci-app-netdata=y
+CONFIG_PACKAGE_netdata=y
+CONFIG_PACKAGE_luci-app-nps=y
+CONFIG_PACKAGE_luci-app-onliner=y
+CONFIG_PACKAGE_luci-app-poweroff=y
+# --- 网络工具 / 服务 ---
+CONFIG_PACKAGE_luci-app-uhttpd=y
+CONFIG_PACKAGE_luci-app-wifischedule=y
+CONFIG_PACKAGE_wifischedule=y
+CONFIG_PACKAGE_luci-app-msd_lite=y
+CONFIG_PACKAGE_msd_lite=y
+CONFIG_PACKAGE_luci-app-uugamebooster=y
+CONFIG_PACKAGE_uugamebooster=y
+# --- 网络存储 / 界面 ---
+CONFIG_PACKAGE_luci-app-filebrowser=y
+CONFIG_PACKAGE_luci-app-adbyby-plus=y
+CONFIG_PACKAGE_adbyby=y
+CONFIG_PACKAGE_luci-app-argon-config=y
+CONFIG_PACKAGE_luci-theme-argon=y
+# --- VPN ---
+CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
+
+
 EOF
 
 echo "[diy-part2] Plugin list appended. Total lines in .config: $(wc -l < .config)"
