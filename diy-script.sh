@@ -45,9 +45,10 @@ git_sparse_clone master https://github.com/immortalwrt/luci applications/luci-ap
 # git_sparse_clone master https://github.com/syb999/openwrt-19.07.1 package/network/services/msd_lite
 
 # 科学上网插件
-# [SA] fw876/helloworld: 改用仓库默认分支 dev(活跃, 2026-10-08; main 停在 2024-10-09 两年不动)。
-#      注意 dev 是开发分支, 若 SSR-Plus 出问题, 加回 -b main 即可回退。
-git clone --depth=1 https://github.com/fw876/helloworld package/luci-app-ssr-plus
+# [SA] dev 的 gn 配方在 lede 2026 编不过, 退回 main (2026-10-10)
+#      dev: gn 2026-09-02, 无 PKG_BUILD_DEPENDS+= ninja/host, 用 +$(NINJA) -> 17 秒挂
+#      main: gn 2023-04-05, 有 ninja/host 依赖
+git clone --depth=1 -b main https://github.com/fw876/helloworld package/luci-app-ssr-plus
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/openwrt-passwall
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall package/luci-app-passwall
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2 package/luci-app-passwall2
