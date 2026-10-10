@@ -35,6 +35,11 @@ git clone --depth=1 https://github.com/ilxp/luci-app-ikoolproxy package/luci-app
 git clone --depth=1 https://github.com/esirplayground/luci-app-poweroff package/luci-app-poweroff
 git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFilter
 # [SA] Jason6111/luci-app-netdata 已停更(2023-08-28) -> 改用 lede 自带 feeds/luci/applications/luci-app-netdata
+# [SA] 这 4 个在 coolsnowwolf/luci@master 里有目录, 但不 clone 就会被 defconfig 静默丢弃
+git_sparse_clone master https://github.com/coolsnowwolf/luci applications/luci-app-kodexplorer
+git_sparse_clone master https://github.com/coolsnowwolf/luci applications/luci-app-v2ray-server
+git_sparse_clone master https://github.com/coolsnowwolf/luci applications/luci-app-ssrserver-python
+git_sparse_clone master https://github.com/coolsnowwolf/luci applications/luci-app-verysync
 git_sparse_clone main https://github.com/Lienol/openwrt-package luci-app-filebrowser luci-app-ssr-mudb-server
 git_sparse_clone master https://github.com/immortalwrt/luci applications/luci-app-eqos
 # git_sparse_clone master https://github.com/syb999/openwrt-19.07.1 package/network/services/msd_lite
