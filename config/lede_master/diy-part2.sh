@@ -2597,6 +2597,62 @@ ABF_EOF
 fi
 echo "[diy-part2] === adblock 段完成 ==="
 
+#=====================================================================================
+# SmartDNS: 默认不自动启动, 让两处显示一致   [added 2026-10-10]
+#
+# \u3010\u95ee\u9898\u3011\u771f\u673a\u5b9e\u6d4b\u53d1\u73b0\u4e24\u4e2a\u5f00\u5173\u4e0d\u4e00\u81f4:
+#     /etc/config/smartdns  option enabled '0'        <- SmartDNS \u9875\u9762\u7684\u300c\u542f\u7528\u300d\u672a\u52fe\u9009
+#     /etc/rc.d/S19smartdns + K82smartdns             <- \u542f\u52a8\u9879\u9875\u9762\u663e\u793a Enabled
+#   \u4e8e\u662f SmartDNS \u9875\u9762\u8bf4"\u672a\u8fd0\u884c", \u542f\u52a8\u9879\u9875\u9762\u8bf4"\u5df2\u542f\u7528",
+#   \u770b\u8d77\u6765\u81ea\u76f8\u77db\u76fe\u3002
+#
+# \u3010\u5b9e\u6d4b\u8bc1\u636e\u3011(smartdns \u5b9e\u9645\u4ece\u672a\u8fd0\u884c)
+#   pidof smartdns                              -> NONE
+#   /etc/init.d/smartdns status                 -> inactive
+#   ubus call service list '{"name":"smartdns"}' -> {"smartdns": {}}   (\u65e0\u5b9e\u4f8b)
+#   \u6309 smartdns.js \u7684\u5224\u5b9a\u903b\u8f91\u9010\u884c\u6a21\u62df:
+#       is_running = res['smartdns']['instances']['smartdns']['running']
+#       -> \u53d6\u4e0d\u5230 -> catch -> false  => \u9875\u9762\u663e\u793a"\u672a\u8fd0\u884c"
+#   \u7ffb\u8bd1\u6587\u4ef6\u4e5f\u6b63\u786e (RUNNING->\u8fd0\u884c\u4e2d, NOT RUNNING->\u672a\u8fd0\u884c)
+#
+# \u3010\u539f\u56e0\u3011/etc/init.d/smartdns \u7684 load_service() L826-832:
+#       [ "$enabled" = "0" ] && { ... return 1; }   # \u76f4\u63a5\u8fd4\u56de
+#       ...
+#       procd_open_instance "smartdns"              # L904, \u6c38\u8fdc\u5230\u4e0d\u4e86
+#   \u5373 enabled=0 \u65f6\u5b83\u786e\u5b9e\u4e0d\u4f1a\u8fd0\u884c\u3002\u4f46 rc.d \u8f6f\u94fe\u4ecd\u5728,
+#   \u542f\u52a8\u9879\u9875\u9762\u53ea\u770b\u8f6f\u94fe, \u6240\u4ee5\u663e\u793a Enabled\u3002
+#
+# \u3010\u4fee\u6cd5\u3011\u53bb\u6389 rc.d \u81ea\u542f\u52a8\u8f6f\u94fe, \u4e24\u5904\u90fd\u663e\u793a\u672a\u542f\u7528/\u672a\u8fd0\u884c\u3002
+#   \u529f\u80fd\u4e0a\u65e0\u53d8\u5316: enabled=0 \u65f6\u672c\u6765\u5c31\u4e0d\u4f1a\u8dd1,
+#   \u53ea\u662f\u9875\u9762\u663e\u793a\u4e0d\u518d\u77db\u76fe\u3002
+#
+#   \u26a0 \u4ee3\u4ef7: \u4ee5\u540e\u82e5\u8981\u7528 SmartDNS, \u9700\u4e24\u6b65:
+#       \u2460 SmartDNS \u9875\u9762\u52fe\u9009\u300c\u542f\u7528\u300d
+#       \u2461 \u542f\u52a8\u9879\u9875\u9762\u4e5f\u542f\u7528 ( \u6216 /etc/init.d/smartdns enable )
+#     \u5426\u5219\u91cd\u542f\u540e\u4e0d\u4f1a\u81ea\u52a8\u8d77\u6765\u3002
+#=====================================================================================
+echo "[diy-part2] === SmartDNS: 默认不自动启动 ==="
+SDO="${REPO_ROOT}/files/etc/uci-defaults/99-smartdns-default-off"
+if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
+    cat > "${SDO}" <<'SDO_EOF'
+#!/bin/sh
+# SmartDNS 默认不自动启动 (first boot, 幂等)
+#   原因: /etc/config/smartdns 出厂 enabled='0', 但 rc.d 里有 S19smartdns 软链,
+#         导致 SmartDNS 页面显示"未运行"、启动项页面却显示"Enabled", 看着矛盾。
+#   注意: 以后要用 SmartDNS 需 ① SmartDNS 页面勾选启用 ② 启动项页面也启用
+#         (或直接 /etc/init.d/smartdns enable)
+[ -x /etc/init.d/smartdns ] || exit 0
+if /etc/init.d/smartdns enabled >/dev/null 2>&1; then
+    /etc/init.d/smartdns disable >/dev/null 2>&1
+    logger -t smartdns-default "已禁用 rc.d 自动启动 (与 uci enabled=0 保持一致)"
+fi
+exit 0
+SDO_EOF
+    chmod 0755 "${SDO}"
+    echo "[diy-part2] 99-smartdns-default-off 已生成"
+fi
+echo "[diy-part2] === SmartDNS 段完成 ==="
+
 # ★★★ 关键修复 (2026-10-10): 末尾重新注入 files/ ★★★
 #
 # 【为什么必须加这一段】
