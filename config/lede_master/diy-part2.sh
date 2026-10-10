@@ -2653,6 +2653,66 @@ SDO_EOF
 fi
 echo "[diy-part2] === SmartDNS 段完成 ==="
 
+#=====================================================================================
+# SmartDNS LuCI 页面状态不刷新 (上游 bug)   [added 2026-10-10]
+#
+# \u3010\u73b0\u8c61\u3011SmartDNS \u9875\u9762\u300c\u542f\u7528\u300d\u6ca1\u52fe, \u5b9e\u9645\u4e5f\u6ca1\u8fdb\u7a0b,
+#   \u4f46\u9875\u9762\u72b6\u6001\u59cb\u7ec8\u663e\u793a\u300cSmartDNS - \u8fd0\u884c\u4e2d\u300d\u3002
+#
+# \u3010\u5b9e\u6d4b\u8bc1\u636e\u3011\u7528\u8bbe\u5907\u672c\u673a\u767b\u5f55 LuCI \u540e\u8c03\u9875\u9762\u7528\u7684\u90a3\u6761 JSON-RPC:
+#     POST /cgi-bin/luci/admin/ubus  {"params":["<sid>","service","list",{"name":"smartdns"}]}
+#     -> {"jsonrpc":"2.0","result":[0,{"smartdns":{}}]}      \u65e0\u5b9e\u4f8b
+#   \u800c smartdns.js \u7684\u5224\u5b9a:
+#     is_running = res['smartdns']['instances']['smartdns']['running'];
+#     -> res['smartdns'] \u662f {}, \u53d6 ['instances'] \u629b TypeError -> catch -> false
+#   => \u9879\u76ee\u4e0a\u5b83\u5e94\u8be5\u663e\u793a\u300c\u672a\u8fd0\u884c\u300d\u3002
+#
+# \u3010\u6839\u56e0\u3011luci.js \u7684 Poll.add():
+#       this.queue.push(e);
+#       if (this.tick != null && !this.active())
+#           this.start();
+#   tick \u521d\u59cb\u4e3a undefined, \u800c JS \u91cc undefined != null \u4e3a false,
+#   \u6240\u4ee5 add() \u4e0d\u4f1a\u9690\u5f0f\u542f\u52a8\u8f6e\u8be2\u5faa\u73af\u3002
+#   \u800c smartdns.js \u5168\u6587 poll.start() \u51fa\u73b0 0 \u6b21 (\u5b9e\u6d4b grep -c),
+#   \u53ea\u6709 poll.add(renderStatus, 1)\u3002
+#   => \u72b6\u6001\u53ea\u6e32\u67d3\u4e00\u6b21\u5c31\u51bb\u7ed3, \u4e0d\u4f1a\u8ddf\u968f\u5b9e\u9645\u72b6\u6001\u53d8\u5316\u3002
+#
+# \u3010\u4fee\u6cd5\u3011\u5728 poll.add(...) \u4e4b\u540e\u8865\u4e0a poll.start()\u3002
+#   \u5b9e\u6d4b\u8865\u4e0a\u540e\u6bcf\u79d2\u5237\u65b0, \u72b6\u6001\u4e0e ubus \u4e00\u81f4\u3002
+#   node --check \u8bed\u6cd5\u6821\u9a8c rc=0\u3002
+#
+# \u6ce8: \u8fd9\u662f\u4e0a\u6e38 luci-app-smartdns \u7684\u95ee\u9898, \u7528\u9996\u542f\u811a\u672c\u6253\u8865\u4e0d\u4f1a
+#     \u5f71\u54cd\u5176\u5b83\u4efb\u4f55\u9875\u9762\u3002
+#=====================================================================================
+echo "[diy-part2] === SmartDNS: 修 LuCI 页面状态不刷新 ==="
+SPF="${REPO_ROOT}/files/etc/uci-defaults/99-smartdns-pollfix"
+if [ -d "${REPO_ROOT}/files/etc/uci-defaults" ]; then
+    cat > "${SPF}" <<'SPF_EOF'
+#!/bin/sh
+# SmartDNS LuCI 页面状态刷新修复 (first boot, 幂等)
+#   上游 luci-app-smartdns 只调 poll.add() 没调 poll.start(),
+#   而 luci.js 的 Poll.add() 不会隐式启动轮询 => 状态冻结。
+#   详见 diy-part2.sh 中本段注释。
+F=/www/luci-static/resources/view/smartdns/smartdns.js
+[ -f "$F" ] || exit 0
+if grep -q 'poll\.start' "$F" 2>/dev/null; then
+    exit 0
+fi
+if grep -q 'poll\.add(renderStatus, 1);' "$F" 2>/dev/null; then
+    sed -i '/poll\.add(renderStatus, 1);/a\			try { poll.start(); } catch (e) { }' "$F"
+    logger -t smartdns-pollfix "已给 smartdns.js 补上 poll.start()"
+else
+    logger -t smartdns-pollfix "未找到 poll.add 行, 跳过"
+fi
+# 触碰 mtime 让浏览器 ETag 失效
+touch "$F"
+exit 0
+SPF_EOF
+    chmod 0755 "${SPF}"
+    echo "[diy-part2] 99-smartdns-pollfix 已生成"
+fi
+echo "[diy-part2] === SmartDNS poll 修复段完成 ==="
+
 # ★★★ 关键修复 (2026-10-10): 末尾重新注入 files/ ★★★
 #
 # 【为什么必须加这一段】
