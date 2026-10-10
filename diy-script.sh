@@ -11,12 +11,10 @@
 
 # 移除要替换的包
 rm -rf feeds/packages/net/mosdns
-rm -rf feeds/packages/net/msd_lite
 rm -rf feeds/packages/net/smartdns
 rm -rf feeds/luci/themes/luci-theme-argon
 rm -rf feeds/luci/themes/luci-theme-netgear
 rm -rf feeds/luci/applications/luci-app-mosdns
-rm -rf feeds/luci/applications/luci-app-netdata
 rm -rf feeds/luci/applications/luci-app-serverchan
 
 # Git稀疏克隆，只克隆指定目录到本地
@@ -30,20 +28,21 @@ function git_sparse_clone() {
 }
 
 # 添加额外插件
-git clone --depth=1 https://github.com/kongfl888/luci-app-adguardhome package/luci-app-adguardhome
+# [SA] kongfl888/luci-app-adguardhome 已停更(2024-03-25) -> kenzok8/openwrt-packages (7201*, push 2026-10-09)
+git_sparse_clone master https://github.com/kenzok8/openwrt-packages luci-app-adguardhome
 git clone --depth=1 https://github.com/tty228/luci-app-wechatpush package/luci-app-serverchan
 git clone --depth=1 https://github.com/ilxp/luci-app-ikoolproxy package/luci-app-ikoolproxy
 git clone --depth=1 https://github.com/esirplayground/luci-app-poweroff package/luci-app-poweroff
 git clone --depth=1 https://github.com/destan19/OpenAppFilter package/OpenAppFilter
-git clone --depth=1 https://github.com/Jason6111/luci-app-netdata package/luci-app-netdata
+# [SA] Jason6111/luci-app-netdata 已停更(2023-08-28) -> 改用 lede 自带 feeds/luci/applications/luci-app-netdata
 git_sparse_clone main https://github.com/Lienol/openwrt-package luci-app-filebrowser luci-app-ssr-mudb-server
 git_sparse_clone master https://github.com/immortalwrt/luci applications/luci-app-eqos
 # git_sparse_clone master https://github.com/syb999/openwrt-19.07.1 package/network/services/msd_lite
 
 # 科学上网插件
-# [SA] fw876/helloworld: 默认分支是 dev(开发分支), README 未指定用哪个分支给 OpenWrt;
-#      按稳定优先保留 main(2024-10-09), 代价是 SSR-Plus 为 2024-10 版。改成 dev 即可用最新(2026-10-08)。
-git clone --depth=1 -b main https://github.com/fw876/helloworld package/luci-app-ssr-plus
+# [SA] fw876/helloworld: 改用仓库默认分支 dev(活跃, 2026-10-08; main 停在 2024-10-09 两年不动)。
+#      注意 dev 是开发分支, 若 SSR-Plus 出问题, 加回 -b main 即可回退。
+git clone --depth=1 https://github.com/fw876/helloworld package/luci-app-ssr-plus
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/openwrt-passwall
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall package/luci-app-passwall
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2 package/luci-app-passwall2
@@ -70,14 +69,16 @@ git clone --depth=1 https://github.com/pymumu/luci-app-smartdns package/luci-app
 git clone --depth=1 https://github.com/pymumu/openwrt-smartdns package/smartdns
 
 # msd_lite
-git clone --depth=1 https://github.com/ximiTech/luci-app-msd_lite package/luci-app-msd_lite
-git clone --depth=1 https://github.com/ximiTech/msd_lite package/msd_lite
+# [SA] ximiTech/luci-app-msd_lite 已停更(2023-07-11) -> immortalwrt/luci (push 2026-10-02)
+git_sparse_clone master https://github.com/immortalwrt/luci applications/luci-app-msd_lite
+# [SA] ximiTech/msd_lite 已停更(2023-07-11) -> 改用 lede 自带 feeds/packages/net/msd_lite
 
 # MosDNS
 git clone --depth=1 https://github.com/sbwml/luci-app-mosdns package/luci-app-mosdns
 
 # Alist
-git clone --depth=1 https://github.com/sbwml/luci-app-alist package/luci-app-alist
+# [SA] sbwml/luci-app-alist 已 archived(2025-05-28) -> 改用 lede 自带 feeds/luci/applications/luci-app-openlist
+#      (configs/armv8-plus.config: CONFIG_PACKAGE_luci-app-alist=y -> CONFIG_PACKAGE_luci-app-openlist=y)
 
 # DDNS.to
 git_sparse_clone main https://github.com/linkease/nas-packages-luci luci/luci-app-ddnsto
